@@ -1,6 +1,6 @@
 .vscode/
 checkpoint/
-dataset/
+dataset/wmt14en_de/train.*
 orig/
 result/
 wandb/

@@ -4,9 +4,9 @@ from time import strftime
 import evaluate
 from tqdm import tqdm
 
+from config import Config
 from tokenizer.tokenizer import Tokenizer
-from transformer.config import Config
-from transformer.transformer import Transformer
+from transformer import Transformer
 from util import TestDataloader
 
 

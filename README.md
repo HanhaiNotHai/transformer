@@ -21,7 +21,7 @@ Download the [checkpoint](https://github.com/HanhaiNotHai/transformer/releases/d
 
 # Train
 
-You can `python prepare-wmt14en2de.py` to build your own tokenizer and datasets or download the [dataset](https://github.com/HanhaiNotHai/transformer/releases/download/v1.0/dataset.tar.xz) and `tar Jxvf dataset.tar.xz` to get my train dataset.
+You can `python -m dataset.prepare-wmt14en2de` to build your own tokenizer and datasets or download the [dataset](https://github.com/HanhaiNotHai/transformer/releases/download/v1.0/dataset.tar.xz) and `tar Jxvf dataset.tar.xz` to get my train dataset.
 
 Sentence pairs in the train dataset are sorted by sum of the length of the source and target tokens.
 

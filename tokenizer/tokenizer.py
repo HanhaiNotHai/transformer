@@ -3,7 +3,7 @@ from tokenizers.implementations import CharBPETokenizer
 from tokenizers.processors import TemplateProcessing
 from torch import Tensor
 
-from transformer.config import Config
+from config import Config
 
 
 class Tokenizer:

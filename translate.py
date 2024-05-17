@@ -1,6 +1,6 @@
+from config import Config
 from tokenizer.tokenizer import Tokenizer
-from transformer.config import Config
-from transformer.transformer import Transformer
+from transformer import Transformer
 
 
 def main() -> None:
