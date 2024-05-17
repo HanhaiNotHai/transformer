@@ -3,12 +3,12 @@ import random
 
 from tqdm import tqdm
 
+from config import Config
 from tokenizer.tokenizer import Tokenizer
-from transformer.config import Config
 
 config = Config()
 
-status = os.system('./prepare-wmt14en2de.sh')
+status = os.system('dataset/prepare-wmt14en2de.sh')
 if status != 0:
     raise RuntimeError('prepare-wmt14en2de.sh failed')
 

@@ -1,7 +1,7 @@
 from torch import Tensor
 
+from config import Config
 from tokenizer.tokenizer import Tokenizer
-from transformer.config import Config
 
 
 class DataLoader:

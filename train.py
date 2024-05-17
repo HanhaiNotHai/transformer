@@ -5,13 +5,13 @@ from time import strftime
 
 import evaluate
 import torch
-import wandb
 from torch import Tensor
 from tqdm import tqdm, trange
 
+import wandb
+from config import Config
 from tokenizer.tokenizer import Tokenizer
-from transformer.config import Config
-from transformer.transformer import Transformer
+from transformer import Transformer
 from util import DataLoader, TestDataloader
 
 

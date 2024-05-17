@@ -4,7 +4,7 @@ from math import inf, sqrt
 import torch
 from torch import Tensor, nn
 
-from .config import Config
+from config import Config
 
 
 class Project(nn.Linear):

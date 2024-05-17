@@ -1,7 +1,7 @@
 import os
 
-from transformer.config import Config
-from transformer.transformer import Transformer
+from config import Config
+from transformer import Transformer
 
 CHECKPINTS_DIR = 'checkpoint/0512_00:46:30/'
 
