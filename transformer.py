@@ -116,7 +116,7 @@ class MultiHeadSelfAttention(nn.Module):
         self.Wqkv = Project(d_model, 3 * d_model)
         self.Wo = Project(d_model, d_model)
 
-    def forward(self, x: Tensor, mask: Tensor = None) -> Tensor:
+    def forward(self, x: Tensor, mask: Tensor = None, is_causal: bool = False) -> Tensor:
         # [b, l, d_model] -> [b, l, 3 * d_model]
         qkv: Tensor = self.Wqkv(x)
         # [b, l, 3 * d_model] -> [b, l, d_model] * 3
@@ -132,7 +132,7 @@ class MultiHeadSelfAttention(nn.Module):
         k = k.transpose(-2, -3)
         v = v.transpose(-2, -3)
 
-        x = scaled_dot_product_attention(q, k, v, mask)
+        x = scaled_dot_product_attention(q, k, v, mask, is_causal=is_causal)
         # [b, h, l, dv] -> [b, l, h, dv]
         x = x.transpose(-2, -3)
         # [b, l, h, dv] -> [b, l, d_model]
@@ -231,14 +231,21 @@ class DecoderLayer(nn.Module):
         self.ffn_dropout = nn.Dropout(dropout)
         self.ffn_norm = nn.LayerNorm(d_model)
 
-    def forward(self, y: Tensor, x: Tensor, y_mask: Tensor = None, x_mask: Tensor = None) -> Tensor:
+    def forward(
+        self,
+        y: Tensor,
+        x: Tensor,
+        y_mask: Tensor = None,
+        x_mask: Tensor = None,
+        is_causal: bool = False,
+    ) -> Tensor:
         '''
         y: decoder input
         x: encoder output
         '''
 
         residual = y
-        y = self.self_mha(y, y_mask)
+        y = self.self_mha(y, y_mask, is_causal)
         x = self.self_mha_dropout(x)
         y += residual
         y = self.self_mha_norm(y)
@@ -273,14 +280,21 @@ class Decoder(nn.Module):
         decoder_layer = DecoderLayer(d_model, h, d_ff, dropout)
         self.layers = nn.ModuleList(deepcopy(decoder_layer) for _ in range(N))
 
-    def forward(self, y: Tensor, x: Tensor, y_mask: Tensor = None, x_mask: Tensor = None) -> Tensor:
+    def forward(
+        self,
+        y: Tensor,
+        x: Tensor,
+        y_mask: Tensor = None,
+        x_mask: Tensor = None,
+        is_causal: bool = False,
+    ) -> Tensor:
         '''
         y: decoder input
         x: encoder output
         '''
 
         for layer in self.layers:
-            y = layer(y, x, y_mask, x_mask)
+            y = layer(y, x, y_mask, x_mask, is_causal)
         return y
 
 
@@ -368,10 +382,8 @@ class Transformer(nn.Module):
         y[0] = self.bos_id
 
         for i in range(1, y.shape[0]):
-            y_mask = self.get_subsequent_mask(i)
-
             y_emb = self.embedder(y[:i])
-            dec_out = self.decoder(y_emb, x, y_mask)
+            dec_out = self.decoder(y_emb, x, is_causal=True)
             logits: Tensor = self.linear(dec_out[-1])
 
             y[i] = logits.argmax()
