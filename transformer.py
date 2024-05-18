@@ -85,20 +85,20 @@ class MultiHeadAttention(nn.Module):
         v = self.Wv(v)
 
         # [b, l, d_model] -> [b, l, h, d_head]
-        q = q.reshape(*q.shape[:2], self.h, self.dk)
-        k = k.reshape(*k.shape[:2], self.h, self.dk)
-        v = v.reshape(*v.shape[:2], self.h, self.dv)
+        q = q.reshape(*q.shape[:-1], self.h, self.dk)
+        k = k.reshape(*k.shape[:-1], self.h, self.dk)
+        v = v.reshape(*v.shape[:-1], self.h, self.dv)
 
         # [b, l, h, d_head] -> [b, h, l, d_head]
-        q.transpose_(1, 2)
-        k.transpose_(1, 2)
-        v.transpose_(1, 2)
+        q = q.transpose(-2, -3)
+        k = k.transpose(-2, -3)
+        v = v.transpose(-2, -3)
 
         x = scaled_dot_product_attention(q, k, v, mask)
         # [b, h, l, dv] -> [b, l, h, dv]
-        x = x.transpose(1, 2)
+        x = x.transpose(-2, -3)
         # [b, l, h, dv] -> [b, l, d_model]
-        x = x.reshape(*x.shape[:2], self.d_model)
+        x = x.reshape(*x.shape[:-2], self.d_model)
         x = self.Wo(x)
 
         return x
@@ -123,20 +123,20 @@ class MultiHeadSelfAttention(nn.Module):
         q, k, v = qkv.split([self.d_model] * 3, -1)
 
         # [b, l, d_model] -> [b, l, h, d_head]
-        q: Tensor = q.reshape(*q.shape[:2], self.h, self.dk)
-        k: Tensor = k.reshape(*k.shape[:2], self.h, self.dk)
-        v: Tensor = v.reshape(*v.shape[:2], self.h, self.dv)
+        q: Tensor = q.reshape(*q.shape[:-1], self.h, self.dk)
+        k: Tensor = k.reshape(*k.shape[:-1], self.h, self.dk)
+        v: Tensor = v.reshape(*v.shape[:-1], self.h, self.dv)
 
         # [b, l, h, d_head] -> [b, h, l, d_head]
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
+        q = q.transpose(-2, -3)
+        k = k.transpose(-2, -3)
+        v = v.transpose(-2, -3)
 
         x = scaled_dot_product_attention(q, k, v, mask)
         # [b, h, l, dv] -> [b, l, h, dv]
-        x = x.transpose(1, 2)
+        x = x.transpose(-2, -3)
         # [b, l, h, dv] -> [b, l, d_model]
-        x = x.reshape(*x.shape[:2], self.d_model)
+        x = x.reshape(*x.shape[:-2], self.d_model)
         x = self.Wo(x)
 
         return x
