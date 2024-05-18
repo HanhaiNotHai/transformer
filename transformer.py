@@ -1,8 +1,9 @@
 from copy import deepcopy
-from math import inf, sqrt
+from math import sqrt
 
 import torch
 from torch import Tensor, nn
+from torch.nn.functional import scaled_dot_product_attention
 
 from config import Config
 
@@ -64,52 +65,79 @@ class Embedder(nn.Module):
         return x
 
 
-class ScaledDotProductAttention(nn.Module):
-
-    def __init__(self, dk: int = 64) -> None:
-        super().__init__()
-
-        self.scaling = 1 / sqrt(dk)
-        self.softmax = nn.Softmax(-1)
-
-    def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None) -> Tensor:
-        # [b, l, dk] -> [b, dk, l]
-        k.transpose_(-1, -2)
-        # [b, l, l]
-        score = q @ k
-        score *= self.scaling
-        if mask is not None:
-            score.masked_fill_(mask.logical_not(), -inf)
-        # [b, l, dv]
-        return self.softmax(score) @ v
-
-
 class MultiHeadAttention(nn.Module):
 
     def __init__(self, d_model: int = 512, h: int = 8) -> None:
         super().__init__()
 
-        dk = dv = d_model // h
+        self.dk = self.dv = d_model // h
+        self.d_model = d_model
+        self.h = h
 
-        project = Project(d_model, dk)
-        self.Wq = nn.ModuleList(deepcopy(project) for _ in range(h))
-        self.Wk = nn.ModuleList(deepcopy(project) for _ in range(h))
-        project = Project(d_model, dv)
-        self.Wv = nn.ModuleList(deepcopy(project) for _ in range(h))
-        self.attention = ScaledDotProductAttention(dk)
+        self.Wq = Project(d_model, d_model)
+        self.Wk = Project(d_model, d_model)
+        self.Wv = Project(d_model, d_model)
         self.Wo = Project(d_model, d_model)
 
     def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None) -> Tensor:
-        # [b, l, d_model] -> [b, l, d_head] * h
-        qs = [Wq(q) for Wq in self.Wq]
-        ks = [Wk(k) for Wk in self.Wk]
-        vs = [Wv(v) for Wv in self.Wv]
+        q = self.Wq(q)
+        k = self.Wk(k)
+        v = self.Wv(v)
 
-        # [b, l, dv] * h
-        heads = [self.attention(q, k, v, mask) for q, k, v in zip(qs, ks, vs)]
-        # [b, l, dv*h=d_model]
-        concat = torch.cat(heads, -1)
-        x = self.Wo(concat)
+        # [b, l, d_model] -> [b, l, h, d_head]
+        q = q.reshape(*q.shape[:-1], self.h, self.dk)
+        k = k.reshape(*k.shape[:-1], self.h, self.dk)
+        v = v.reshape(*v.shape[:-1], self.h, self.dv)
+
+        # [b, l, h, d_head] -> [b, h, l, d_head]
+        q = q.transpose(-2, -3)
+        k = k.transpose(-2, -3)
+        v = v.transpose(-2, -3)
+
+        x = scaled_dot_product_attention(q, k, v, mask)
+        # [b, h, l, dv] -> [b, l, h, dv]
+        x = x.transpose(-2, -3)
+        # [b, l, h, dv] -> [b, l, d_model]
+        x = x.reshape(*x.shape[:-2], self.d_model)
+        x = self.Wo(x)
+
+        return x
+
+
+class MultiHeadSelfAttention(nn.Module):
+
+    def __init__(self, d_model: int = 512, h: int = 8) -> None:
+        super().__init__()
+
+        self.dk = self.dv = d_model // h
+        self.d_model = d_model
+        self.h = h
+
+        self.Wqkv = Project(d_model, 3 * d_model)
+        self.Wo = Project(d_model, d_model)
+
+    def forward(self, x: Tensor, mask: Tensor = None, is_causal: bool = False) -> Tensor:
+        # [b, l, d_model] -> [b, l, 3 * d_model]
+        qkv: Tensor = self.Wqkv(x)
+        # [b, l, 3 * d_model] -> [b, l, d_model] * 3
+        q, k, v = qkv.split([self.d_model] * 3, -1)
+
+        # [b, l, d_model] -> [b, l, h, d_head]
+        q: Tensor = q.reshape(*q.shape[:-1], self.h, self.dk)
+        k: Tensor = k.reshape(*k.shape[:-1], self.h, self.dk)
+        v: Tensor = v.reshape(*v.shape[:-1], self.h, self.dv)
+
+        # [b, l, h, d_head] -> [b, h, l, d_head]
+        q = q.transpose(-2, -3)
+        k = k.transpose(-2, -3)
+        v = v.transpose(-2, -3)
+
+        x = scaled_dot_product_attention(q, k, v, mask, is_causal=is_causal)
+        # [b, h, l, dv] -> [b, l, h, dv]
+        x = x.transpose(-2, -3)
+        # [b, l, h, dv] -> [b, l, d_model]
+        x = x.reshape(*x.shape[:-2], self.d_model)
+        x = self.Wo(x)
 
         return x
 
@@ -139,7 +167,7 @@ class EncoderLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.mha = MultiHeadAttention(d_model, h)
+        self.self_mha = MultiHeadSelfAttention(d_model, h)
         self.mha_dropout = nn.Dropout(dropout)
         self.mha_norm = nn.LayerNorm(d_model)
 
@@ -149,7 +177,7 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x: Tensor, x_mask: Tensor = None) -> Tensor:
         residual = x
-        x = self.mha(x, x, x, x_mask)
+        x = self.self_mha(x, x_mask)
         x = self.mha_dropout(x)
         x += residual
         x = self.mha_norm(x)
@@ -191,35 +219,42 @@ class DecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.mha1 = MultiHeadAttention(d_model, h)
-        self.mha1_dropout = nn.Dropout(dropout)
-        self.mha1_norm = nn.LayerNorm(d_model)
+        self.self_mha = MultiHeadSelfAttention(d_model, h)
+        self.self_mha_dropout = nn.Dropout(dropout)
+        self.self_mha_norm = nn.LayerNorm(d_model)
 
-        self.mha2 = MultiHeadAttention(d_model, h)
-        self.mha2_dropout = nn.Dropout(dropout)
-        self.mha2_norm = nn.LayerNorm(d_model)
+        self.mha = MultiHeadAttention(d_model, h)
+        self.mha_dropout = nn.Dropout(dropout)
+        self.mha_norm = nn.LayerNorm(d_model)
 
         self.ffn = FeedForward(d_model, d_ff)
         self.ffn_dropout = nn.Dropout(dropout)
         self.ffn_norm = nn.LayerNorm(d_model)
 
-    def forward(self, y: Tensor, x: Tensor, y_mask: Tensor = None, x_mask: Tensor = None) -> Tensor:
+    def forward(
+        self,
+        y: Tensor,
+        x: Tensor,
+        y_mask: Tensor = None,
+        x_mask: Tensor = None,
+        is_causal: bool = False,
+    ) -> Tensor:
         '''
         y: decoder input
         x: encoder output
         '''
 
         residual = y
-        y = self.mha1(y, y, y, y_mask)
-        x = self.mha1_dropout(x)
+        y = self.self_mha(y, y_mask, is_causal)
+        x = self.self_mha_dropout(x)
         y += residual
-        y = self.mha1_norm(y)
+        y = self.self_mha_norm(y)
 
         residual = y
-        y = self.mha2(y, x, x, x_mask)
-        x = self.mha2_dropout(x)
+        y = self.mha(y, x, x, x_mask)
+        x = self.mha_dropout(x)
         y += residual
-        y = self.mha2_norm(y)
+        y = self.mha_norm(y)
 
         residual = y
         y = self.ffn(y)
@@ -245,14 +280,21 @@ class Decoder(nn.Module):
         decoder_layer = DecoderLayer(d_model, h, d_ff, dropout)
         self.layers = nn.ModuleList(deepcopy(decoder_layer) for _ in range(N))
 
-    def forward(self, y: Tensor, x: Tensor, y_mask: Tensor = None, x_mask: Tensor = None) -> Tensor:
+    def forward(
+        self,
+        y: Tensor,
+        x: Tensor,
+        y_mask: Tensor = None,
+        x_mask: Tensor = None,
+        is_causal: bool = False,
+    ) -> Tensor:
         '''
         y: decoder input
         x: encoder output
         '''
 
         for layer in self.layers:
-            y = layer(y, x, y_mask, x_mask)
+            y = layer(y, x, y_mask, x_mask, is_causal)
         return y
 
 
@@ -282,9 +324,7 @@ class Transformer(nn.Module):
         self.linear.weight = self.embedder.embedding.weight
 
         # Prevent leftward information flow in the decoder.
-        subsequent_mask = (
-            torch.triu(torch.ones([config.n_position, config.n_position]), diagonal=1) == 0
-        )
+        subsequent_mask = torch.ones([config.n_position, config.n_position]).bool().tril()
         self.subsequent_mask: Tensor
         self.register_buffer('subsequent_mask', subsequent_mask, False)
 
@@ -314,8 +354,13 @@ class Transformer(nn.Module):
         return self.subsequent_mask[:seq_len, :seq_len]
 
     def forward(self, x: Tensor, y: Tensor, x_mask: Tensor = None, y_mask: Tensor = None) -> Tensor:
+        # [b, l] -> [b, 1, 1, l]
+        x_mask.unsqueeze_(1).unsqueeze_(1)
         # WHY: (subsequent_mask & y_mask) is faster than (y_mask & subsequent_mask).
-        y_mask = self.get_subsequent_mask(y.shape[1]) & y_mask
+        # [l - 1, l - 1] & [b, 1, l - 1] -> [b, l - 1, l - 1]
+        y_mask = self.get_subsequent_mask(y.shape[1]) & y_mask.unsqueeze(1)
+        # [b, l - 1, l - 1] -> [b, 1, l - 1, l - 1]
+        y_mask.unsqueeze_(1)
 
         x = self.embedder(x)
         y = self.embedder(y)
@@ -337,10 +382,8 @@ class Transformer(nn.Module):
         y[0] = self.bos_id
 
         for i in range(1, y.shape[0]):
-            y_mask = self.get_subsequent_mask(i)
-
             y_emb = self.embedder(y[:i])
-            dec_out = self.decoder(y_emb, x, y_mask)
+            dec_out = self.decoder(y_emb, x, is_causal=True)
             logits: Tensor = self.linear(dec_out[-1])
 
             y[i] = logits.argmax()

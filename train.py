@@ -128,14 +128,12 @@ def main() -> None:
         for batch in tqdm(train_dataloader, 'train', leave=False):
             step += 1
             x, x_pad_mask, y, y_pad_mask = to(batch, transformer.device)
-            # [b, 1, l]
-            x_pad_mask.unsqueeze_(1)
             # [b * (l - 1)]
             target = y[:, 1:].reshape(-1)
             # [b, l - 1]
             y = y[:, :-1]
-            # [b, 1, l - 1]
-            y_pad_mask = y_pad_mask[:, :-1].unsqueeze(1)
+            # [b, l - 1]
+            y_pad_mask = y_pad_mask[:, :-1]
 
             optimizer.zero_grad()
             logits: Tensor = transformer(x, y, x_pad_mask, y_pad_mask)
