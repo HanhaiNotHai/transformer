@@ -1,8 +1,9 @@
 from copy import deepcopy
-from math import inf, sqrt
+from math import sqrt
 
 import torch
 from torch import Tensor, nn
+from torch.nn.functional import scaled_dot_product_attention
 
 from config import Config
 
@@ -64,26 +65,6 @@ class Embedder(nn.Module):
         return x
 
 
-class ScaledDotProductAttention(nn.Module):
-
-    def __init__(self, dk: int = 64) -> None:
-        super().__init__()
-
-        self.scaling = 1 / sqrt(dk)
-        self.softmax = nn.Softmax(-1)
-
-    def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None) -> Tensor:
-        # [b, l, dk] -> [b, dk, l]
-        k.transpose_(-1, -2)
-        # [b, l, l]
-        score = q @ k
-        score *= self.scaling
-        if mask is not None:
-            score.masked_fill_(mask.logical_not(), -inf)
-        # [b, l, dv]
-        return self.softmax(score) @ v
-
-
 class MultiHeadAttention(nn.Module):
 
     def __init__(self, d_model: int = 512, h: int = 8) -> None:
@@ -96,7 +77,6 @@ class MultiHeadAttention(nn.Module):
         self.Wk = nn.ModuleList(deepcopy(project) for _ in range(h))
         project = Project(d_model, dv)
         self.Wv = nn.ModuleList(deepcopy(project) for _ in range(h))
-        self.attention = ScaledDotProductAttention(dk)
         self.Wo = Project(d_model, d_model)
 
     def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None) -> Tensor:
@@ -106,7 +86,7 @@ class MultiHeadAttention(nn.Module):
         vs = [Wv(v) for Wv in self.Wv]
 
         # [b, l, dv] * h
-        heads = [self.attention(q, k, v, mask) for q, k, v in zip(qs, ks, vs)]
+        heads = [scaled_dot_product_attention(q, k, v, mask) for q, k, v in zip(qs, ks, vs)]
         # [b, l, dv*h=d_model]
         concat = torch.cat(heads, -1)
         x = self.Wo(concat)
@@ -282,9 +262,7 @@ class Transformer(nn.Module):
         self.linear.weight = self.embedder.embedding.weight
 
         # Prevent leftward information flow in the decoder.
-        subsequent_mask = (
-            torch.triu(torch.ones([config.n_position, config.n_position]), diagonal=1) == 0
-        )
+        subsequent_mask = torch.ones([config.n_position, config.n_position]).bool().tril()
         self.subsequent_mask: Tensor
         self.register_buffer('subsequent_mask', subsequent_mask, False)
 
