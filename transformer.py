@@ -104,6 +104,44 @@ class MultiHeadAttention(nn.Module):
         return x
 
 
+class MultiHeadSelfAttention(nn.Module):
+
+    def __init__(self, d_model: int = 512, h: int = 8) -> None:
+        super().__init__()
+
+        self.dk = self.dv = d_model // h
+        self.d_model = d_model
+        self.h = h
+
+        self.Wqkv = Project(d_model, 3 * d_model)
+        self.Wo = Project(d_model, d_model)
+
+    def forward(self, x: Tensor, mask: Tensor = None) -> Tensor:
+        # [b, l, d_model] -> [b, l, 3 * d_model]
+        qkv: Tensor = self.Wqkv(x)
+        # [b, l, 3 * d_model] -> [b, l, d_model] * 3
+        q, k, v = qkv.split([self.d_model] * 3, -1)
+
+        # [b, l, d_model] -> [b, l, h, d_head]
+        q: Tensor = q.reshape(*q.shape[:2], self.h, self.dk)
+        k: Tensor = k.reshape(*k.shape[:2], self.h, self.dk)
+        v: Tensor = v.reshape(*v.shape[:2], self.h, self.dv)
+
+        # [b, l, h, d_head] -> [b, h, l, d_head]
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        x = scaled_dot_product_attention(q, k, v, mask)
+        # [b, h, l, dv] -> [b, l, h, dv]
+        x = x.transpose(1, 2)
+        # [b, l, h, dv] -> [b, l, d_model]
+        x = x.reshape(*x.shape[:2], self.d_model)
+        x = self.Wo(x)
+
+        return x
+
+
 class FeedForward(nn.Module):
 
     def __init__(self, d_model: int = 512, d_ff: int = 2048) -> None:
@@ -129,7 +167,7 @@ class EncoderLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.mha = MultiHeadAttention(d_model, h)
+        self.self_mha = MultiHeadSelfAttention(d_model, h)
         self.mha_dropout = nn.Dropout(dropout)
         self.mha_norm = nn.LayerNorm(d_model)
 
@@ -139,7 +177,7 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x: Tensor, x_mask: Tensor = None) -> Tensor:
         residual = x
-        x = self.mha(x, x, x, x_mask)
+        x = self.self_mha(x, x_mask)
         x = self.mha_dropout(x)
         x += residual
         x = self.mha_norm(x)
@@ -181,13 +219,13 @@ class DecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.mha1 = MultiHeadAttention(d_model, h)
-        self.mha1_dropout = nn.Dropout(dropout)
-        self.mha1_norm = nn.LayerNorm(d_model)
+        self.self_mha = MultiHeadSelfAttention(d_model, h)
+        self.self_mha_dropout = nn.Dropout(dropout)
+        self.self_mha_norm = nn.LayerNorm(d_model)
 
-        self.mha2 = MultiHeadAttention(d_model, h)
-        self.mha2_dropout = nn.Dropout(dropout)
-        self.mha2_norm = nn.LayerNorm(d_model)
+        self.mha = MultiHeadAttention(d_model, h)
+        self.mha_dropout = nn.Dropout(dropout)
+        self.mha_norm = nn.LayerNorm(d_model)
 
         self.ffn = FeedForward(d_model, d_ff)
         self.ffn_dropout = nn.Dropout(dropout)
@@ -200,16 +238,16 @@ class DecoderLayer(nn.Module):
         '''
 
         residual = y
-        y = self.mha1(y, y, y, y_mask)
-        x = self.mha1_dropout(x)
+        y = self.self_mha(y, y_mask)
+        x = self.self_mha_dropout(x)
         y += residual
-        y = self.mha1_norm(y)
+        y = self.self_mha_norm(y)
 
         residual = y
-        y = self.mha2(y, x, x, x_mask)
-        x = self.mha2_dropout(x)
+        y = self.mha(y, x, x, x_mask)
+        x = self.mha_dropout(x)
         y += residual
-        y = self.mha2_norm(y)
+        y = self.mha_norm(y)
 
         residual = y
         y = self.ffn(y)
