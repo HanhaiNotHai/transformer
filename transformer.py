@@ -70,26 +70,36 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, d_model: int = 512, h: int = 8) -> None:
         super().__init__()
 
-        dk = dv = d_model // h
+        self.dk = self.dv = d_model // h
+        self.d_model = d_model
+        self.h = h
 
-        project = Project(d_model, dk)
-        self.Wq = nn.ModuleList(deepcopy(project) for _ in range(h))
-        self.Wk = nn.ModuleList(deepcopy(project) for _ in range(h))
-        project = Project(d_model, dv)
-        self.Wv = nn.ModuleList(deepcopy(project) for _ in range(h))
+        self.Wq = Project(d_model, d_model)
+        self.Wk = Project(d_model, d_model)
+        self.Wv = Project(d_model, d_model)
         self.Wo = Project(d_model, d_model)
 
     def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None) -> Tensor:
-        # [b, l, d_model] -> [b, l, d_head] * h
-        qs = [Wq(q) for Wq in self.Wq]
-        ks = [Wk(k) for Wk in self.Wk]
-        vs = [Wv(v) for Wv in self.Wv]
+        q = self.Wq(q)
+        k = self.Wk(k)
+        v = self.Wv(v)
 
-        # [b, l, dv] * h
-        heads = [scaled_dot_product_attention(q, k, v, mask) for q, k, v in zip(qs, ks, vs)]
-        # [b, l, dv*h=d_model]
-        concat = torch.cat(heads, -1)
-        x = self.Wo(concat)
+        # [b, l, d_model] -> [b, l, h, d_head]
+        q = q.reshape(*q.shape[:2], self.h, self.dk)
+        k = k.reshape(*k.shape[:2], self.h, self.dk)
+        v = v.reshape(*v.shape[:2], self.h, self.dv)
+
+        # [b, l, h, d_head] -> [b, h, l, d_head]
+        q.transpose_(1, 2)
+        k.transpose_(1, 2)
+        v.transpose_(1, 2)
+
+        x = scaled_dot_product_attention(q, k, v, mask)
+        # [b, h, l, dv] -> [b, l, h, dv]
+        x = x.transpose(1, 2)
+        # [b, l, h, dv] -> [b, l, d_model]
+        x = x.reshape(*x.shape[:2], self.d_model)
+        x = self.Wo(x)
 
         return x
 
@@ -292,8 +302,13 @@ class Transformer(nn.Module):
         return self.subsequent_mask[:seq_len, :seq_len]
 
     def forward(self, x: Tensor, y: Tensor, x_mask: Tensor = None, y_mask: Tensor = None) -> Tensor:
+        # [b, l] -> [b, 1, 1, l]
+        x_mask.unsqueeze_(1).unsqueeze_(1)
         # WHY: (subsequent_mask & y_mask) is faster than (y_mask & subsequent_mask).
-        y_mask = self.get_subsequent_mask(y.shape[1]) & y_mask
+        # [l - 1, l - 1] & [b, 1, l - 1] -> [b, l - 1, l - 1]
+        y_mask = self.get_subsequent_mask(y.shape[1]) & y_mask.unsqueeze(1)
+        # [b, l - 1, l - 1] -> [b, 1, l - 1, l - 1]
+        y_mask.unsqueeze_(1)
 
         x = self.embedder(x)
         y = self.embedder(y)
