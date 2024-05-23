@@ -67,7 +67,7 @@ class Embedder(nn.Module):
 
 class MultiHeadAttention(nn.Module):
 
-    def __init__(self, d_model: int = 512, h_q: int = 8, h_kv: int = 1) -> None:
+    def __init__(self, d_model: int = 512, h_q: int = 8, h_kv: int = 1, max_len: int = 100) -> None:
         super().__init__()
 
         self.d_head = d_model // h_q
@@ -82,7 +82,22 @@ class MultiHeadAttention(nn.Module):
         self.Wv = Project(d_model, self.d_kv)
         self.Wo = Project(d_model, d_model)
 
-    def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None) -> Tensor:
+        k_cache = torch.zeros(max_len, h_kv, self.d_head)
+        v_cache = torch.zeros(max_len, h_kv, self.d_head)
+        self.k_cache: Tensor
+        self.v_cache: Tensor
+        self.register_buffer('k_cache', k_cache, False)
+        self.register_buffer('v_cache', v_cache, False)
+
+    def forward(
+        self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        mask: Tensor = None,
+        kv_cache: bool = False,
+        i: int = None,
+    ) -> Tensor:
         # [b, l, d_model] -> [b, l, h * d_head]
         q = self.Wq(q)
         k = self.Wk(k)
@@ -92,6 +107,12 @@ class MultiHeadAttention(nn.Module):
         q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
         k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
         v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
+
+        if kv_cache:
+            self.k_cache[i] = k[0]
+            self.v_cache[i] = v[0]
+            k = self.k_cache[: i + 1]
+            v = self.v_cache[: i + 1]
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
@@ -115,7 +136,14 @@ class MultiHeadAttention(nn.Module):
 
 class MultiHeadSelfAttention(nn.Module):
 
-    def __init__(self, d_model: int = 512, h_q: int = 8, h_kv: int = 1) -> None:
+    def __init__(
+        self,
+        d_model: int = 512,
+        h_q: int = 8,
+        h_kv: int = 1,
+        max_len: int = 100,
+        kv_cache: bool = False,
+    ) -> None:
         super().__init__()
 
         self.d_head = d_model // h_q
@@ -129,7 +157,22 @@ class MultiHeadSelfAttention(nn.Module):
         self.Wqkv = Project(d_model, (h_q + 2 * h_kv) * self.d_head)
         self.Wo = Project(d_model, d_model)
 
-    def forward(self, x: Tensor, mask: Tensor = None, is_causal: bool = False) -> Tensor:
+        if kv_cache:
+            k_cache = torch.zeros(max_len, h_kv, self.d_head)
+            v_cache = torch.zeros(max_len, h_kv, self.d_head)
+            self.k_cache: Tensor
+            self.v_cache: Tensor
+            self.register_buffer('k_cache', k_cache, False)
+            self.register_buffer('v_cache', v_cache, False)
+
+    def forward(
+        self,
+        x: Tensor,
+        mask: Tensor = None,
+        kv_cache: bool = False,
+        i: int = None,
+        is_causal: bool = False,
+    ) -> Tensor:
         # [b, l, d_model] -> [b, l, (h_q + 2 * h_kv) * self.d_head]
         qkv: Tensor = self.Wqkv(x)
         # [b, l, (h_q + 2 * h_kv) * self.d_head] -> [b, l, {h_q, h_kv, h_kv} * d_head]
@@ -139,6 +182,12 @@ class MultiHeadSelfAttention(nn.Module):
         q: Tensor = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
         k: Tensor = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
         v: Tensor = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
+
+        if kv_cache:
+            self.k_cache[i] = k[0]
+            self.v_cache[i] = v[0]
+            k = self.k_cache[: i + 1]
+            v = self.v_cache[: i + 1]
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
@@ -245,14 +294,15 @@ class DecoderLayer(nn.Module):
         h_kv: int = 1,  # num of k,v heads
         d_ff: int = 2048,
         dropout: float = 0.1,
+        max_len: int = 100,
     ) -> None:
         super().__init__()
 
-        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv)
+        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, max_len, kv_cache=True)
         self.self_mha_dropout = nn.Dropout(dropout)
         self.self_mha_norm = nn.LayerNorm(d_model)
 
-        self.mha = MultiHeadAttention(d_model, h_q, h_kv)
+        self.mha = MultiHeadAttention(d_model, h_q, h_kv, max_len)
         self.mha_dropout = nn.Dropout(dropout)
         self.mha_norm = nn.LayerNorm(d_model)
 
@@ -266,6 +316,8 @@ class DecoderLayer(nn.Module):
         x: Tensor,
         y_mask: Tensor = None,
         x_mask: Tensor = None,
+        kv_cache: bool = False,
+        i: int = None,
         is_causal: bool = False,
     ) -> Tensor:
         '''
@@ -274,13 +326,13 @@ class DecoderLayer(nn.Module):
         '''
 
         residual = y
-        y = self.self_mha(y, y_mask, is_causal)
+        y = self.self_mha(y, y_mask, kv_cache, i, is_causal)
         x = self.self_mha_dropout(x)
         y += residual
         y = self.self_mha_norm(y)
 
         residual = y
-        y = self.mha(y, x, x, x_mask)
+        y = self.mha(y, x, x, x_mask, kv_cache, i)
         x = self.mha_dropout(x)
         y += residual
         y = self.mha_norm(y)
@@ -304,10 +356,11 @@ class Decoder(nn.Module):
         d_ff: int = 2048,
         dropout: float = 0.1,
         N: int = 6,  # num of encoder,decoder layers
+        max_len: int = 100,
     ) -> None:
         super().__init__()
 
-        decoder_layer = DecoderLayer(d_model, h_q, h_kv, d_ff, dropout)
+        decoder_layer = DecoderLayer(d_model, h_q, h_kv, d_ff, dropout, max_len)
         self.layers = nn.ModuleList(deepcopy(decoder_layer) for _ in range(N))
 
     def forward(
@@ -316,6 +369,8 @@ class Decoder(nn.Module):
         x: Tensor,
         y_mask: Tensor = None,
         x_mask: Tensor = None,
+        kv_cache: bool = False,
+        i: int = None,
         is_causal: bool = False,
     ) -> Tensor:
         '''
@@ -324,7 +379,7 @@ class Decoder(nn.Module):
         '''
 
         for layer in self.layers:
-            y = layer(y, x, y_mask, x_mask, is_causal)
+            y = layer(y, x, y_mask, x_mask, kv_cache, i, is_causal)
         return y
 
 
@@ -347,7 +402,7 @@ class Transformer(nn.Module):
 
         self.embedder = Embedder(vocab_size, d_model, n_position, dropout)
         self.encoder = Encoder(d_model, h_q, h_kv, d_ff, dropout, N)
-        self.decoder = Decoder(d_model, h_q, h_kv, d_ff, dropout, N)
+        self.decoder = Decoder(d_model, h_q, h_kv, d_ff, dropout, N, max_len=n_position)
         self.linear = nn.Linear(d_model, vocab_size)
 
         # share the same weight matrix between the two embedding layers
@@ -412,14 +467,14 @@ class Transformer(nn.Module):
         y = torch.empty([seq_len], dtype=torch.long, device=self.device)
         y[0] = self.bos_id
 
-        for i in range(1, y.shape[0]):
-            y_emb = self.embedder(y[:i])
-            dec_out = self.decoder(y_emb, x, is_causal=True)
+        for i in range(y.shape[0] - 1):
+            y_emb = self.embedder(y[i : i + 1])
+            dec_out = self.decoder(y_emb, x, kv_cache=True, i=i, is_causal=True)
             logits: Tensor = self.linear(dec_out[-1])
 
-            y[i] = logits.argmax()
-            if y[i] == self.eos_id:
+            y[i + 1] = logits.argmax()
+            if y[i + 1] == self.eos_id:
                 # Remove BOS and EOS ids.
-                return y[1:i]
+                return y[1 : i + 1]
         # Remove BOS id.
         return y[1:]
