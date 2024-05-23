@@ -44,7 +44,8 @@ class Config:
     n_position: int = 100  # positional encoding length
     dropout: float = 0.1
     N: int = 6  # num of encoder,decoder layers
-    h: int = 8  # num of k,q,v heads
+    h_q: int = 8  # num of q heads
+    h_kv: int = 1  # num of k,v heads
     d_ff: int = 2048
 
     # train
@@ -62,7 +63,8 @@ class Config:
     length_penalty: float = 0.6
 
     def __post_init__(self) -> None:
-        assert self.d_model % self.h == 0, 'd_model must be divisible by h'
+        assert self.d_model % self.h_q == 0, 'd_model must be divisible by h_q'
+        assert self.h_q % self.h_kv == 0, 'h_q must be divisible by h_kv'
         self.device = torch.device('cuda' if self.cuda and torch.cuda.is_available() else 'cpu')
         if self.cuda and not torch.cuda.is_available():
             print('Warning: CUDA is not available, using CPU instead.')
@@ -77,7 +79,8 @@ class Config:
             d_model=self.d_model,
             n_position=self.n_position,
             dropout=self.dropout,
-            h=self.h,
+            h_q=self.h_q,
+            h_kv=self.h_kv,
             d_ff=self.d_ff,
             N=self.N,
         )
