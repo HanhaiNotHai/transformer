@@ -67,37 +67,46 @@ class Embedder(nn.Module):
 
 class MultiHeadAttention(nn.Module):
 
-    def __init__(self, d_model: int = 512, h: int = 8) -> None:
+    def __init__(self, d_model: int = 512, h_q: int = 8, h_kv: int = 1) -> None:
         super().__init__()
 
-        self.dk = self.dv = d_model // h
+        self.d_head = d_model // h_q
+        self.d_kv = h_kv * self.d_head
+        self.G = h_q // h_kv  # groups of grouped-query attention
         self.d_model = d_model
-        self.h = h
+        self.h_q = h_q
+        self.h_kv = h_kv
 
         self.Wq = Project(d_model, d_model)
-        self.Wk = Project(d_model, d_model)
-        self.Wv = Project(d_model, d_model)
+        self.Wk = Project(d_model, self.d_kv)
+        self.Wv = Project(d_model, self.d_kv)
         self.Wo = Project(d_model, d_model)
 
     def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None) -> Tensor:
+        # [b, l, d_model] -> [b, l, h * d_head]
         q = self.Wq(q)
         k = self.Wk(k)
         v = self.Wv(v)
 
-        # [b, l, d_model] -> [b, l, h, d_head]
-        q = q.reshape(*q.shape[:-1], self.h, self.dk)
-        k = k.reshape(*k.shape[:-1], self.h, self.dk)
-        v = v.reshape(*v.shape[:-1], self.h, self.dv)
+        # [b, l, h * d_head] -> [b, l, h, d_head]
+        q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
+        k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
+        v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
 
-        # [b, l, h, d_head] -> [b, h, l, d_head]
+        if self.G > 1:
+            # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
+            k = torch.repeat_interleave(k, self.G, -2)
+            v = torch.repeat_interleave(v, self.G, -2)
+
+        # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
         q = q.transpose(-2, -3)
         k = k.transpose(-2, -3)
         v = v.transpose(-2, -3)
 
         x = scaled_dot_product_attention(q, k, v, mask)
-        # [b, h, l, dv] -> [b, l, h, dv]
+        # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
         x = x.transpose(-2, -3)
-        # [b, l, h, dv] -> [b, l, d_model]
+        # [b, l, h_q, d_head] -> [b, l, d_model]
         x = x.reshape(*x.shape[:-2], self.d_model)
         x = self.Wo(x)
 
@@ -106,36 +115,45 @@ class MultiHeadAttention(nn.Module):
 
 class MultiHeadSelfAttention(nn.Module):
 
-    def __init__(self, d_model: int = 512, h: int = 8) -> None:
+    def __init__(self, d_model: int = 512, h_q: int = 8, h_kv: int = 1) -> None:
         super().__init__()
 
-        self.dk = self.dv = d_model // h
+        self.d_head = d_model // h_q
+        self.d_q = d_model
+        self.d_kv = h_kv * self.d_head
+        self.G = h_q // h_kv  # groups of grouped-query attention
         self.d_model = d_model
-        self.h = h
+        self.h_q = h_q
+        self.h_kv = h_kv
 
-        self.Wqkv = Project(d_model, 3 * d_model)
+        self.Wqkv = Project(d_model, (h_q + 2 * h_kv) * self.d_head)
         self.Wo = Project(d_model, d_model)
 
     def forward(self, x: Tensor, mask: Tensor = None, is_causal: bool = False) -> Tensor:
-        # [b, l, d_model] -> [b, l, 3 * d_model]
+        # [b, l, d_model] -> [b, l, (h_q + 2 * h_kv) * self.d_head]
         qkv: Tensor = self.Wqkv(x)
-        # [b, l, 3 * d_model] -> [b, l, d_model] * 3
-        q, k, v = qkv.split([self.d_model] * 3, -1)
+        # [b, l, (h_q + 2 * h_kv) * self.d_head] -> [b, l, {h_q, h_kv, h_kv} * d_head]
+        q, k, v = qkv.split([self.d_q, self.d_kv, self.d_kv], -1)
 
-        # [b, l, d_model] -> [b, l, h, d_head]
-        q: Tensor = q.reshape(*q.shape[:-1], self.h, self.dk)
-        k: Tensor = k.reshape(*k.shape[:-1], self.h, self.dk)
-        v: Tensor = v.reshape(*v.shape[:-1], self.h, self.dv)
+        # [b, l, h * d_head] -> [b, l, h, d_head]
+        q: Tensor = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
+        k: Tensor = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
+        v: Tensor = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
 
-        # [b, l, h, d_head] -> [b, h, l, d_head]
+        if self.G > 1:
+            # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
+            k = torch.repeat_interleave(k, self.G, -2)
+            v = torch.repeat_interleave(v, self.G, -2)
+
+        # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
         q = q.transpose(-2, -3)
         k = k.transpose(-2, -3)
         v = v.transpose(-2, -3)
 
         x = scaled_dot_product_attention(q, k, v, mask, is_causal=is_causal)
-        # [b, h, l, dv] -> [b, l, h, dv]
+        # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
         x = x.transpose(-2, -3)
-        # [b, l, h, dv] -> [b, l, d_model]
+        # [b, l, h_q, d_head] -> [b, l, d_model]
         x = x.reshape(*x.shape[:-2], self.d_model)
         x = self.Wo(x)
 
@@ -163,11 +181,16 @@ class FeedForward(nn.Module):
 class EncoderLayer(nn.Module):
 
     def __init__(
-        self, d_model: int = 512, h: int = 8, d_ff: int = 2048, dropout: float = 0.1
+        self,
+        d_model: int = 512,
+        h_q: int = 8,  # num of q heads
+        h_kv: int = 1,  # num of k,v heads
+        d_ff: int = 2048,
+        dropout: float = 0.1,
     ) -> None:
         super().__init__()
 
-        self.self_mha = MultiHeadSelfAttention(d_model, h)
+        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv)
         self.mha_dropout = nn.Dropout(dropout)
         self.mha_norm = nn.LayerNorm(d_model)
 
@@ -196,14 +219,15 @@ class Encoder(nn.Module):
     def __init__(
         self,
         d_model: int = 512,
-        h: int = 8,  # num of k,q,v heads
+        h_q: int = 8,  # num of q heads
+        h_kv: int = 1,  # num of k,v heads
         d_ff: int = 2048,
         dropout: float = 0.1,
         N: int = 6,  # num of encoder,decoder layers
     ) -> None:
         super().__init__()
 
-        encoder_layer = EncoderLayer(d_model, h, d_ff, dropout)
+        encoder_layer = EncoderLayer(d_model, h_q, h_kv, d_ff, dropout)
         self.layers = nn.ModuleList(deepcopy(encoder_layer) for _ in range(N))
 
     def forward(self, x: Tensor, x_mask: Tensor = None) -> Tensor:
@@ -215,15 +239,20 @@ class Encoder(nn.Module):
 class DecoderLayer(nn.Module):
 
     def __init__(
-        self, d_model: int = 512, h: int = 8, d_ff: int = 2048, dropout: float = 0.1
+        self,
+        d_model: int = 512,
+        h_q: int = 8,  # num of q heads
+        h_kv: int = 1,  # num of k,v heads
+        d_ff: int = 2048,
+        dropout: float = 0.1,
     ) -> None:
         super().__init__()
 
-        self.self_mha = MultiHeadSelfAttention(d_model, h)
+        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv)
         self.self_mha_dropout = nn.Dropout(dropout)
         self.self_mha_norm = nn.LayerNorm(d_model)
 
-        self.mha = MultiHeadAttention(d_model, h)
+        self.mha = MultiHeadAttention(d_model, h_q, h_kv)
         self.mha_dropout = nn.Dropout(dropout)
         self.mha_norm = nn.LayerNorm(d_model)
 
@@ -270,14 +299,15 @@ class Decoder(nn.Module):
     def __init__(
         self,
         d_model: int = 512,
-        h: int = 8,  # num of k,q,v heads
+        h_q: int = 8,  # num of q heads
+        h_kv: int = 1,  # num of k,v heads
         d_ff: int = 2048,
         dropout: float = 0.1,
         N: int = 6,  # num of encoder,decoder layers
     ) -> None:
         super().__init__()
 
-        decoder_layer = DecoderLayer(d_model, h, d_ff, dropout)
+        decoder_layer = DecoderLayer(d_model, h_q, h_kv, d_ff, dropout)
         self.layers = nn.ModuleList(deepcopy(decoder_layer) for _ in range(N))
 
     def forward(
@@ -307,7 +337,8 @@ class Transformer(nn.Module):
         d_model: int = 512,
         n_position: int = 100,  # positional encoding length
         dropout: float = 0.1,
-        h: int = 8,  # num of k,q,v heads
+        h_q: int = 8,  # num of q heads
+        h_kv: int = 1,  # num of k,v heads
         d_ff: int = 2048,
         N: int = 6,  # num of encoder,decoder layers
         ckpt_path: str = None,
@@ -315,8 +346,8 @@ class Transformer(nn.Module):
         super().__init__()
 
         self.embedder = Embedder(vocab_size, d_model, n_position, dropout)
-        self.encoder = Encoder(d_model, h, d_ff, dropout, N)
-        self.decoder = Decoder(d_model, h, d_ff, dropout, N)
+        self.encoder = Encoder(d_model, h_q, h_kv, d_ff, dropout, N)
+        self.decoder = Decoder(d_model, h_q, h_kv, d_ff, dropout, N)
         self.linear = nn.Linear(d_model, vocab_size)
 
         # share the same weight matrix between the two embedding layers
