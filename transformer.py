@@ -85,37 +85,33 @@ class MultiHeadAttention(nn.Module):
         self.Wv = Project(d_model, self.d_kv)
         self.Wo = Project(d_model, d_model)
 
-        k_cache = torch.zeros(max_len, h_kv, self.d_head)
-        v_cache = torch.zeros(max_len, h_kv, self.d_head)
-        self.k_cache: Tensor
-        self.v_cache: Tensor
-        self.register_buffer('k_cache', k_cache, False)
-        self.register_buffer('v_cache', v_cache, False)
-
     def forward(
         self,
         q: Tensor,
         k: Tensor,
         v: Tensor,
         mask: Tensor = None,
-        kv_cache: bool = False,
         i: int = None,
     ) -> Tensor:
-        # [b, l, d_model] -> [b, l, h * d_head]
+        # [b, l, d_model] -> [b, l, h_q * d_head]
         q = self.Wq(q)
-        k = self.Wk(k)
-        v = self.Wv(v)
-
-        # [b, l, h * d_head] -> [b, l, h, d_head]
+        # [b, l, h_q * d_head] -> [b, l, h_q, d_head]
         q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
-        k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
-        v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
 
-        if kv_cache:
-            self.k_cache[i] = k[0]
-            self.v_cache[i] = v[0]
-            k = self.k_cache[: i + 1]
-            v = self.v_cache[: i + 1]
+        if not i:
+            # [b, l, d_model] -> [b, l, h_kv * d_head]
+            k = self.Wk(k)
+            v = self.Wv(v)
+
+            # [b, l,   * d_head] -> [b, l,  , d_head]
+            k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
+            v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
+
+            self.k_cache = k
+            self.v_cache = v
+        else:
+            k = self.k_cache
+            v = self.v_cache
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
@@ -333,7 +329,7 @@ class DecoderLayer(nn.Module):
         y = self.self_mha_norm(y)
 
         residual = y
-        y = self.mha(y, x, x, x_mask, kv_cache, i)
+        y = self.mha(y, x, x, x_mask, i)
         x = self.mha_dropout(x)
         y += residual
         y = self.mha_norm(y)
@@ -470,7 +466,7 @@ class Transformer(nn.Module):
         for i in range(y.shape[0] - 1):
             y_emb = self.embedder(y[i : i + 1], i)
             dec_out = self.decoder(y_emb, x, kv_cache=True, i=i)
-            logits: Tensor = self.linear(dec_out[-1])
+            logits: Tensor = self.linear(dec_out)
 
             y[i + 1] = logits.argmax()
             if y[i + 1] == self.eos_id:
