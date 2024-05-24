@@ -34,8 +34,11 @@ class PositionalEncoding(nn.Module):
         self.PE: Tensor
         self.register_buffer('PE', PE, False)
 
-    def forward(self, x: Tensor) -> Tensor:
-        x += self.PE[: x.shape[-2]]
+    def forward(self, x: Tensor, i: int = None) -> Tensor:
+        if i is None:
+            x += self.PE[: x.shape[-2]]
+        else:
+            x += self.PE[i : i + 1]
         return x
 
 
@@ -56,11 +59,11 @@ class Embedder(nn.Module):
         self.positional_encoding = PositionalEncoding(d_model, n_position)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, i: int = None) -> Tensor:
         # [b, l] -> [b, l, d_model]
         x = self.embedding(x)
         x *= self.embedding_scaling
-        x = self.positional_encoding(x)
+        x = self.positional_encoding(x, i)
         x = self.dropout(x)
         return x
 
@@ -171,7 +174,6 @@ class MultiHeadSelfAttention(nn.Module):
         mask: Tensor = None,
         kv_cache: bool = False,
         i: int = None,
-        is_causal: bool = False,
     ) -> Tensor:
         # [b, l, d_model] -> [b, l, (h_q + 2 * h_kv) * self.d_head]
         qkv: Tensor = self.Wqkv(x)
@@ -199,7 +201,7 @@ class MultiHeadSelfAttention(nn.Module):
         k = k.transpose(-2, -3)
         v = v.transpose(-2, -3)
 
-        x = scaled_dot_product_attention(q, k, v, mask, is_causal=is_causal)
+        x = scaled_dot_product_attention(q, k, v, mask)
         # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
         x = x.transpose(-2, -3)
         # [b, l, h_q, d_head] -> [b, l, d_model]
@@ -318,7 +320,6 @@ class DecoderLayer(nn.Module):
         x_mask: Tensor = None,
         kv_cache: bool = False,
         i: int = None,
-        is_causal: bool = False,
     ) -> Tensor:
         '''
         y: decoder input
@@ -326,7 +327,7 @@ class DecoderLayer(nn.Module):
         '''
 
         residual = y
-        y = self.self_mha(y, y_mask, kv_cache, i, is_causal)
+        y = self.self_mha(y, y_mask, kv_cache, i)
         x = self.self_mha_dropout(x)
         y += residual
         y = self.self_mha_norm(y)
@@ -371,7 +372,6 @@ class Decoder(nn.Module):
         x_mask: Tensor = None,
         kv_cache: bool = False,
         i: int = None,
-        is_causal: bool = False,
     ) -> Tensor:
         '''
         y: decoder input
@@ -379,7 +379,7 @@ class Decoder(nn.Module):
         '''
 
         for layer in self.layers:
-            y = layer(y, x, y_mask, x_mask, kv_cache, i, is_causal)
+            y = layer(y, x, y_mask, x_mask, kv_cache, i)
         return y
 
 
@@ -468,8 +468,8 @@ class Transformer(nn.Module):
         y[0] = self.bos_id
 
         for i in range(y.shape[0] - 1):
-            y_emb = self.embedder(y[i : i + 1])
-            dec_out = self.decoder(y_emb, x, kv_cache=True, i=i, is_causal=True)
+            y_emb = self.embedder(y[i : i + 1], i)
+            dec_out = self.decoder(y_emb, x, kv_cache=True, i=i)
             logits: Tensor = self.linear(dec_out[-1])
 
             y[i + 1] = logits.argmax()
