@@ -70,7 +70,7 @@ class Embedder(nn.Module):
 
 class MultiHeadAttention(nn.Module):
 
-    def __init__(self, d_model: int = 512, h_q: int = 8, h_kv: int = 1, max_len: int = 100) -> None:
+    def __init__(self, d_model: int = 512, h_q: int = 8, h_kv: int = 1) -> None:
         super().__init__()
 
         self.d_head = d_model // h_q
@@ -81,31 +81,24 @@ class MultiHeadAttention(nn.Module):
         self.h_kv = h_kv
 
         self.Wq = Project(d_model, d_model)
-        self.Wk = Project(d_model, self.d_kv)
-        self.Wv = Project(d_model, self.d_kv)
+        self.Wkv = Project(d_model, 2 * self.d_kv)
         self.Wo = Project(d_model, d_model)
 
-    def forward(
-        self,
-        q: Tensor,
-        k: Tensor,
-        v: Tensor,
-        mask: Tensor = None,
-        i: int = None,
-    ) -> Tensor:
+    def forward(self, y: Tensor, x: Tensor, mask: Tensor = None, i: int = None) -> Tensor:
         # [b, l, d_model] -> [b, l, h_q * d_head]
-        q = self.Wq(q)
+        q: Tensor = self.Wq(y)
         # [b, l, h_q * d_head] -> [b, l, h_q, d_head]
         q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
 
         if not i:
-            # [b, l, d_model] -> [b, l, h_kv * d_head]
-            k = self.Wk(k)
-            v = self.Wv(v)
+            # [b, l, d_model] -> [b, l, 2 * h_kv * d_head]
+            kv: Tensor = self.Wkv(x)
+            # [b, l, 2 * h_kv * d_head] -> [b, l, h_kv * d_head] * 2
+            k, v = kv.split([self.d_kv, self.d_kv], -1)
 
-            # [b, l,   * d_head] -> [b, l,  , d_head]
-            k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
-            v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
+            # [b, l, h_kv * d_head] -> [b, l, h_kv, d_head]
+            k: Tensor = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
+            v: Tensor = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
 
             self.k_cache = k
             self.v_cache = v
@@ -165,13 +158,9 @@ class MultiHeadSelfAttention(nn.Module):
             self.register_buffer('v_cache', v_cache, False)
 
     def forward(
-        self,
-        x: Tensor,
-        mask: Tensor = None,
-        kv_cache: bool = False,
-        i: int = None,
+        self, x: Tensor, mask: Tensor = None, kv_cache: bool = False, i: int = None
     ) -> Tensor:
-        # [b, l, d_model] -> [b, l, (h_q + 2 * h_kv) * self.d_head]
+        # [b, l, d_model] -> [b, l, (h_q + 2 * h_kv) * d_head]
         qkv: Tensor = self.Wqkv(x)
         # [b, l, (h_q + 2 * h_kv) * self.d_head] -> [b, l, {h_q, h_kv, h_kv} * d_head]
         q, k, v = qkv.split([self.d_q, self.d_kv, self.d_kv], -1)
@@ -329,7 +318,7 @@ class DecoderLayer(nn.Module):
         y = self.self_mha_norm(y)
 
         residual = y
-        y = self.mha(y, x, x, x_mask, i)
+        y = self.mha(y, x, x_mask, i)
         x = self.mha_dropout(x)
         y += residual
         y = self.mha_norm(y)
