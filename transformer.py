@@ -6,6 +6,7 @@ from torch import Tensor, nn
 from torch.nn.functional import scaled_dot_product_attention
 
 from config import Config
+from util import Singleton
 
 
 class Project(nn.Linear):
@@ -16,32 +17,6 @@ class Project(nn.Linear):
         super().__init__(in_features, out_features, bias, device, dtype)
 
 
-class PositionalEncoding(nn.Module):
-
-    def __init__(self, d_model: int = 512, n_position: int = 100):
-        super().__init__()
-
-        # [n_position, 1]
-        pos = torch.arange(n_position, dtype=torch.float).unsqueeze_(1)
-        # [d_model // 2]
-        i = torch.arange(0, d_model, 2, dtype=torch.float)
-        # [n_position, d_model // 2]
-        x = pos / torch.pow(10000, i / d_model)
-        PE = torch.FloatTensor(torch.Size([n_position, d_model]))
-        PE[:, ::2] = torch.sin(x)
-        PE[:, 1::2] = torch.cos(x)
-        # Not a parameter, but to(device) with nn.Module.
-        self.PE: Tensor
-        self.register_buffer('PE', PE, False)
-
-    def forward(self, x: Tensor, i: int = None) -> Tensor:
-        if i is None:
-            x += self.PE[: x.shape[-2]]
-        else:
-            x += self.PE[i : i + 1]
-        return x
-
-
 class Embedder(nn.Module):
     '''Combine the two embedding and positional encoding layers into one.'''
 
@@ -49,28 +24,82 @@ class Embedder(nn.Module):
         self,
         vocab_size: int,
         d_model: int = 512,
-        n_position: int = 100,  # positional encoding length
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
 
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.embedding_scaling = sqrt(d_model)
-        self.positional_encoding = PositionalEncoding(d_model, n_position)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: Tensor, i: int = None) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         # [b, l] -> [b, l, d_model]
         x = self.embedding(x)
         x *= self.embedding_scaling
-        x = self.positional_encoding(x, i)
         x = self.dropout(x)
         return x
 
 
-class MultiHeadAttention(nn.Module):
+@Singleton
+class RotaryPositionEmbedding(nn.Module):
 
-    def __init__(self, d_model: int = 512, h_q: int = 8, h_kv: int = 1) -> None:
+    def __init__(
+        self, d_head: int = 64, n_position: int = 100  # length of rotary position embedding
+    ) -> None:
+        super().__init__()
+
+        # [d_head // 2]
+        theta = 1 / (10000 ** (torch.arange(0, d_head, 2) / d_head))
+        # [d_head]
+        theta = theta.repeat_interleave(2)
+        # [1, d_head]
+        theta.unsqueeze_(0)
+
+        # [n_position]
+        m = torch.arange(n_position, dtype=theta.dtype)
+        # [n_position, 1]
+        m.unsqueeze_(1)
+
+        # [n_position, d_head]
+        x = m @ theta
+        # [n_position, 1, d_head]
+        x.unsqueeze_(1)
+        cos = torch.cos(x)
+        sin = torch.sin(x)
+
+        self.cos: Tensor
+        self.sin: Tensor
+        self.register_buffer('cos', cos, False)
+        self.register_buffer('sin', sin, False)
+
+    def rotate_half(self, x: Tensor) -> Tensor:
+        x1 = x[..., ::2]
+        x2 = x[..., 1::2]
+        x = torch.empty_like(x)
+        x[..., ::2] = -x2
+        x[..., 1::2] = x1
+        return x
+
+    def forward(self, x: Tensor, i: int = None) -> Tensor:
+        if i is None:
+            cos = self.cos[: x.shape[-3]]
+            sin = self.sin[: x.shape[-3]]
+        else:
+            cos = self.cos[i]
+            sin = self.sin[i]
+        return x * cos + self.rotate_half(x) * sin
+
+
+class MultiHeadAttention(nn.Module):
+    '''encoder-decoder mha'''
+
+    def __init__(
+        self,
+        d_model: int = 512,
+        h_q: int = 8,  # num of q heads
+        h_kv: int = 1,  # num of k,v heads
+        n_position: int = 100,  # length of rotary position embedding
+    ) -> None:
         super().__init__()
 
         self.d_head = d_model // h_q
@@ -82,6 +111,7 @@ class MultiHeadAttention(nn.Module):
 
         self.Wq = Project(d_model, d_model)
         self.Wkv = Project(d_model, 2 * self.d_kv)
+        self.rotary_position_embedding = RotaryPositionEmbedding(self.d_head, n_position)
         self.Wo = Project(d_model, d_model)
 
     def forward(self, y: Tensor, x: Tensor, mask: Tensor = None, i: int = None) -> Tensor:
@@ -89,6 +119,7 @@ class MultiHeadAttention(nn.Module):
         q: Tensor = self.Wq(y)
         # [b, l, h_q * d_head] -> [b, l, h_q, d_head]
         q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
+        q = self.rotary_position_embedding(q, i)
 
         if not i:
             # [b, l, d_model] -> [b, l, 2 * h_kv * d_head]
@@ -100,6 +131,8 @@ class MultiHeadAttention(nn.Module):
             k: Tensor = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
             v: Tensor = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
 
+            k = self.rotary_position_embedding(k)
+
             self.k_cache = k
             self.v_cache = v
         else:
@@ -108,8 +141,8 @@ class MultiHeadAttention(nn.Module):
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
-            k = torch.repeat_interleave(k, self.G, -2)
-            v = torch.repeat_interleave(v, self.G, -2)
+            k = k.repeat_interleave(self.G, -2)
+            v = v.repeat_interleave(self.G, -2)
 
         # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
         q = q.transpose(-2, -3)
@@ -127,13 +160,14 @@ class MultiHeadAttention(nn.Module):
 
 
 class MultiHeadSelfAttention(nn.Module):
+    '''encoder and decoder self_mha'''
 
     def __init__(
         self,
         d_model: int = 512,
-        h_q: int = 8,
-        h_kv: int = 1,
-        max_len: int = 100,
+        h_q: int = 8,  # num of q heads
+        h_kv: int = 1,  # num of k,v heads
+        n_position: int = 100,  # length of rotary position embedding
         kv_cache: bool = False,
     ) -> None:
         super().__init__()
@@ -147,11 +181,12 @@ class MultiHeadSelfAttention(nn.Module):
         self.h_kv = h_kv
 
         self.Wqkv = Project(d_model, (h_q + 2 * h_kv) * self.d_head)
+        self.rotary_position_embedding = RotaryPositionEmbedding(self.d_head, n_position)
         self.Wo = Project(d_model, d_model)
 
         if kv_cache:
-            k_cache = torch.zeros(max_len, h_kv, self.d_head)
-            v_cache = torch.zeros(max_len, h_kv, self.d_head)
+            k_cache = torch.zeros(n_position, h_kv, self.d_head)
+            v_cache = torch.zeros(n_position, h_kv, self.d_head)
             self.k_cache: Tensor
             self.v_cache: Tensor
             self.register_buffer('k_cache', k_cache, False)
@@ -170,6 +205,9 @@ class MultiHeadSelfAttention(nn.Module):
         k: Tensor = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
         v: Tensor = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
 
+        q = self.rotary_position_embedding(q, i)
+        k = self.rotary_position_embedding(k, i)
+
         if kv_cache:
             self.k_cache[i] = k[0]
             self.v_cache[i] = v[0]
@@ -178,8 +216,8 @@ class MultiHeadSelfAttention(nn.Module):
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
-            k = torch.repeat_interleave(k, self.G, -2)
-            v = torch.repeat_interleave(v, self.G, -2)
+            k = k.repeat_interleave(self.G, -2)
+            v = v.repeat_interleave(self.G, -2)
 
         # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
         q = q.transpose(-2, -3)
@@ -221,12 +259,13 @@ class EncoderLayer(nn.Module):
         d_model: int = 512,
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
+        n_position: int = 100,  # length of rotary position embedding
         d_ff: int = 2048,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
 
-        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv)
+        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, n_position)
         self.mha_dropout = nn.Dropout(dropout)
         self.mha_norm = nn.LayerNorm(d_model)
 
@@ -257,13 +296,14 @@ class Encoder(nn.Module):
         d_model: int = 512,
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
+        n_position: int = 100,  # length of rotary position embedding
         d_ff: int = 2048,
         dropout: float = 0.1,
-        N: int = 6,  # num of encoder,decoder layers
+        N: int = 6,  # num of encoder layers
     ) -> None:
         super().__init__()
 
-        encoder_layer = EncoderLayer(d_model, h_q, h_kv, d_ff, dropout)
+        encoder_layer = EncoderLayer(d_model, h_q, h_kv, n_position, d_ff, dropout)
         self.layers = nn.ModuleList(deepcopy(encoder_layer) for _ in range(N))
 
     def forward(self, x: Tensor, x_mask: Tensor = None) -> Tensor:
@@ -279,17 +319,17 @@ class DecoderLayer(nn.Module):
         d_model: int = 512,
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
+        n_position: int = 100,  # length of rotary position embedding
         d_ff: int = 2048,
         dropout: float = 0.1,
-        max_len: int = 100,
     ) -> None:
         super().__init__()
 
-        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, max_len, kv_cache=True)
+        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, n_position, kv_cache=True)
         self.self_mha_dropout = nn.Dropout(dropout)
         self.self_mha_norm = nn.LayerNorm(d_model)
 
-        self.mha = MultiHeadAttention(d_model, h_q, h_kv, max_len)
+        self.mha = MultiHeadAttention(d_model, h_q, h_kv, n_position)
         self.mha_dropout = nn.Dropout(dropout)
         self.mha_norm = nn.LayerNorm(d_model)
 
@@ -339,14 +379,14 @@ class Decoder(nn.Module):
         d_model: int = 512,
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
+        n_position: int = 100,  # length of rotary position embedding
         d_ff: int = 2048,
         dropout: float = 0.1,
-        N: int = 6,  # num of encoder,decoder layers
-        max_len: int = 100,
+        N: int = 6,  # num of decoder layers
     ) -> None:
         super().__init__()
 
-        decoder_layer = DecoderLayer(d_model, h_q, h_kv, d_ff, dropout, max_len)
+        decoder_layer = DecoderLayer(d_model, h_q, h_kv, n_position, d_ff, dropout)
         self.layers = nn.ModuleList(deepcopy(decoder_layer) for _ in range(N))
 
     def forward(
@@ -375,19 +415,19 @@ class Transformer(nn.Module):
         config: Config,
         vocab_size: int,
         d_model: int = 512,
-        n_position: int = 100,  # positional encoding length
         dropout: float = 0.1,
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
+        n_position: int = 100,  # length of rotary position embedding
         d_ff: int = 2048,
         N: int = 6,  # num of encoder,decoder layers
         ckpt_path: str = None,
     ) -> None:
         super().__init__()
 
-        self.embedder = Embedder(vocab_size, d_model, n_position, dropout)
-        self.encoder = Encoder(d_model, h_q, h_kv, d_ff, dropout, N)
-        self.decoder = Decoder(d_model, h_q, h_kv, d_ff, dropout, N, max_len=n_position)
+        self.embedder = Embedder(vocab_size, d_model, dropout)
+        self.encoder = Encoder(d_model, h_q, h_kv, n_position, d_ff, dropout, N)
+        self.decoder = Decoder(d_model, h_q, h_kv, n_position, d_ff, dropout, N)
         self.linear = nn.Linear(d_model, vocab_size)
 
         # share the same weight matrix between the two embedding layers
@@ -453,7 +493,7 @@ class Transformer(nn.Module):
         y[0] = self.bos_id
 
         for i in range(y.shape[0] - 1):
-            y_emb = self.embedder(y[i : i + 1], i)
+            y_emb = self.embedder(y[i : i + 1])
             dec_out = self.decoder(y_emb, x, kv_cache=True, i=i)
             logits: Tensor = self.linear(dec_out)
 

@@ -4,6 +4,17 @@ from config import Config
 from tokenizer.tokenizer import Tokenizer
 
 
+def Singleton(cls):
+    instance = dict()
+
+    def singleton(*args, **kwargs):
+        if cls not in instance:
+            instance[cls] = cls(*args, **kwargs)
+        return instance[cls]
+
+    return singleton
+
+
 class DataLoader:
 
     def __len__(self) -> int:
