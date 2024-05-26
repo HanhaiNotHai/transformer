@@ -17,6 +17,18 @@ class Project(nn.Linear):
         super().__init__(in_features, out_features, bias, device, dtype)
 
 
+class RMSNorm(torch.nn.Module):
+
+    def __init__(self, d_model: int = 512, eps: float = 1e-8) -> None:
+        super().__init__()
+
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(d_model))
+
+    def forward(self, x: Tensor) -> Tensor:
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
+
+
 class Embedder(nn.Module):
     '''Combine the two embedding and positional encoding layers into one.'''
 
@@ -267,11 +279,11 @@ class EncoderLayer(nn.Module):
 
         self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, n_position)
         self.mha_dropout = nn.Dropout(dropout)
-        self.mha_norm = nn.LayerNorm(d_model)
+        self.mha_norm = RMSNorm(d_model)
 
         self.ffn = FeedForward(d_model, d_ff)
         self.ffn_dropout = nn.Dropout(dropout)
-        self.ffn_norm = nn.LayerNorm(d_model)
+        self.ffn_norm = RMSNorm(d_model)
 
     def forward(self, x: Tensor, x_mask: Tensor = None) -> Tensor:
         residual = x
@@ -327,15 +339,15 @@ class DecoderLayer(nn.Module):
 
         self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, n_position, kv_cache=True)
         self.self_mha_dropout = nn.Dropout(dropout)
-        self.self_mha_norm = nn.LayerNorm(d_model)
+        self.self_mha_norm = RMSNorm(d_model)
 
         self.mha = MultiHeadAttention(d_model, h_q, h_kv, n_position)
         self.mha_dropout = nn.Dropout(dropout)
-        self.mha_norm = nn.LayerNorm(d_model)
+        self.mha_norm = RMSNorm(d_model)
 
         self.ffn = FeedForward(d_model, d_ff)
         self.ffn_dropout = nn.Dropout(dropout)
-        self.ffn_norm = nn.LayerNorm(d_model)
+        self.ffn_norm = RMSNorm(d_model)
 
     def forward(
         self,
