@@ -13,6 +13,32 @@ class Project(nn.Linear):
         super().__init__(in_features, out_features, bias, device, dtype)
 
 
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int = 512, n_position: int = 100):
+        super().__init__()
+
+        # [n_position, 1]
+        pos = torch.arange(n_position, dtype=torch.float).unsqueeze_(1)
+        # [d_model // 2]
+        i = torch.arange(0, d_model, 2, dtype=torch.float)
+        # [n_position, d_model // 2]
+        x = pos / torch.pow(10000, i / d_model)
+        PE = torch.FloatTensor(torch.Size([n_position, d_model]))
+        PE[:, ::2] = torch.sin(x)
+        PE[:, 1::2] = torch.cos(x)
+        # Not a parameter, but to(device) with nn.Module.
+        self.PE: Tensor
+        self.register_buffer('PE', PE, False)
+
+    def forward(self, x: Tensor, i: int = None) -> Tensor:
+        if i is None:
+            x += self.PE[: x.shape[-2]]
+        else:
+            x += self.PE[i : i + 1]
+        return x
+
+
 class ScaledDotProductAttention(nn.Module):
 
     def __init__(self, dk: int = 64) -> None:
@@ -60,4 +86,22 @@ class MultiHeadAttention(nn.Module):
         concat = torch.cat(heads, -1)
         x = self.Wo(concat)
 
+        return x
+
+
+class FeedForward(nn.Module):
+
+    def __init__(self, d_model: int = 512, d_ff: int = 2048) -> None:
+        super().__init__()
+
+        self.linear1 = nn.Linear(d_model, d_ff)
+        self.relu = nn.ReLU(inplace=True)
+        self.linear2 = nn.Linear(d_ff, d_model)
+
+    def forward(self, x: Tensor) -> Tensor:
+        # [b, l, d_model] -> [b, l, d_ff]
+        x = self.linear1(x)
+        self.relu(x)
+        # [b, l, d_ff] -> [b, l, d_model]
+        x = self.linear2(x)
         return x
