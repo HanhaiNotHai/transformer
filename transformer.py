@@ -247,21 +247,19 @@ class MultiHeadSelfAttention(nn.Module):
 
 
 class FeedForward(nn.Module):
+    '''SwiGLU'''
 
     def __init__(self, d_model: int = 512, d_ff: int = 2048) -> None:
         super().__init__()
 
-        self.linear1 = nn.Linear(d_model, d_ff)
-        self.relu = nn.ReLU(inplace=True)
-        self.linear2 = nn.Linear(d_ff, d_model)
+        self.W = Project(d_model, d_ff)
+        self.silu = nn.SiLU(inplace=True)
+        self.V = Project(d_model, d_ff)
+        self.W2 = Project(d_ff, d_model)
 
     def forward(self, x: Tensor) -> Tensor:
-        # [b, l, d_model] -> [b, l, d_ff]
-        x = self.linear1(x)
-        self.relu(x)
-        # [b, l, d_ff] -> [b, l, d_model]
-        x = self.linear2(x)
-        return x
+        # [b, l, d_model] -> [b, l, d_ff] -> [b, l, d_model]
+        return self.W2(self.silu(self.W(x)) * self.V(x))
 
 
 class EncoderLayer(nn.Module):
@@ -476,7 +474,7 @@ class Transformer(nn.Module):
     def get_subsequent_mask(self, seq_len: int) -> Tensor:
         return self.subsequent_mask[:seq_len, :seq_len]
 
-    def forward(self, x: Tensor, y: Tensor, x_mask: Tensor = None, y_mask: Tensor = None) -> Tensor:
+    def forward(self, x: Tensor, y: Tensor, x_mask: Tensor, y_mask: Tensor) -> Tensor:
         # [b, l] -> [b, 1, 1, l]
         x_mask.unsqueeze_(1).unsqueeze_(1)
         # WHY: (subsequent_mask & y_mask) is faster than (y_mask & subsequent_mask).
