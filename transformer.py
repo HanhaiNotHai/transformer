@@ -262,6 +262,37 @@ class FeedForward(nn.Module):
         return self.W2(self.silu(self.W(x)) * self.V(x))
 
 
+class MixtureOfExperts(nn.Module):
+
+    def __init__(
+        self, d_model: int = 512, d_ff: int = 2048, num_experts: int = 8, topk: int = 2
+    ) -> None:
+        super().__init__()
+
+        self.gate = Project(d_model, num_experts)
+        self.softmax = nn.Softmax(1)
+        expert = FeedForward(d_model, d_ff)
+        self.experts = nn.ModuleList(deepcopy(expert) for _ in range(num_experts))
+
+        self.topk = topk
+
+    def forward(self, x: Tensor) -> Tensor:
+        # [b, l, num_experts]
+        gate_logits = self.gate(x)
+        # [b, l, topk]
+        weights, selected_experts = torch.topk(gate_logits, self.topk)
+
+        weights: Tensor = self.softmax(weights)
+        # [b, l, topk, 1] for weight * expert
+        weights = weights.unsqueeze(-1)
+
+        y = torch.zeros_like(x)
+        for i, expert in enumerate(self.experts):
+            *idx, nth_expert = torch.where(selected_experts == i)
+            y[*idx] += weights[*idx, nth_expert] * expert(x[*idx])
+        return y
+
+
 class EncoderLayer(nn.Module):
 
     def __init__(
@@ -271,6 +302,8 @@ class EncoderLayer(nn.Module):
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
         d_ff: int = 2048,
+        num_experts: int = 8,
+        topk: int = 2,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
@@ -279,7 +312,7 @@ class EncoderLayer(nn.Module):
         self.mha_dropout = nn.Dropout(dropout)
         self.mha_norm = RMSNorm(d_model)
 
-        self.ffn = FeedForward(d_model, d_ff)
+        self.ffn = MixtureOfExperts(d_model, d_ff, num_experts, topk)
         self.ffn_dropout = nn.Dropout(dropout)
         self.ffn_norm = RMSNorm(d_model)
 
@@ -308,12 +341,16 @@ class Encoder(nn.Module):
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
         d_ff: int = 2048,
+        num_experts: int = 8,
+        topk: int = 2,
         dropout: float = 0.1,
         N: int = 6,  # num of encoder layers
     ) -> None:
         super().__init__()
 
-        encoder_layer = EncoderLayer(d_model, h_q, h_kv, n_position, d_ff, dropout)
+        encoder_layer = EncoderLayer(
+            d_model, h_q, h_kv, n_position, d_ff, num_experts, topk, dropout
+        )
         self.layers = nn.ModuleList(deepcopy(encoder_layer) for _ in range(N))
 
     def forward(self, x: Tensor, x_mask: Tensor = None) -> Tensor:
@@ -331,6 +368,8 @@ class DecoderLayer(nn.Module):
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
         d_ff: int = 2048,
+        num_experts: int = 8,
+        topk: int = 2,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
@@ -343,7 +382,7 @@ class DecoderLayer(nn.Module):
         self.mha_dropout = nn.Dropout(dropout)
         self.mha_norm = RMSNorm(d_model)
 
-        self.ffn = FeedForward(d_model, d_ff)
+        self.ffn = MixtureOfExperts(d_model, d_ff, num_experts, topk)
         self.ffn_dropout = nn.Dropout(dropout)
         self.ffn_norm = RMSNorm(d_model)
 
@@ -391,12 +430,16 @@ class Decoder(nn.Module):
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
         d_ff: int = 2048,
+        num_experts: int = 8,
+        topk: int = 2,
         dropout: float = 0.1,
         N: int = 6,  # num of decoder layers
     ) -> None:
         super().__init__()
 
-        decoder_layer = DecoderLayer(d_model, h_q, h_kv, n_position, d_ff, dropout)
+        decoder_layer = DecoderLayer(
+            d_model, h_q, h_kv, n_position, d_ff, num_experts, topk, dropout
+        )
         self.layers = nn.ModuleList(deepcopy(decoder_layer) for _ in range(N))
 
     def forward(
@@ -430,14 +473,16 @@ class Transformer(nn.Module):
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
         d_ff: int = 2048,
+        num_experts: int = 8,
+        topk: int = 2,
         N: int = 6,  # num of encoder,decoder layers
         ckpt_path: str = None,
     ) -> None:
         super().__init__()
 
         self.embedder = Embedder(vocab_size, d_model, dropout)
-        self.encoder = Encoder(d_model, h_q, h_kv, n_position, d_ff, dropout, N)
-        self.decoder = Decoder(d_model, h_q, h_kv, n_position, d_ff, dropout, N)
+        self.encoder = Encoder(d_model, h_q, h_kv, n_position, d_ff, num_experts, topk, dropout, N)
+        self.decoder = Decoder(d_model, h_q, h_kv, n_position, d_ff, num_experts, topk, dropout, N)
         self.linear = nn.Linear(d_model, vocab_size)
 
         # share the same weight matrix between the two embedding layers

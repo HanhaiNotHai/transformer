@@ -46,6 +46,8 @@ class Config:
     h_kv: int = 1  # num of k,v heads
     n_position: int = 100  # length of rotary position embedding
     d_ff: int = 2048
+    num_experts: int = 8
+    topk: int = 2
     N: int = 6  # num of encoder,decoder layers
 
     # train
@@ -82,6 +84,8 @@ class Config:
             h_kv=self.h_kv,
             n_position=self.n_position,
             d_ff=self.d_ff,
+            num_experts=self.num_experts,
+            topk=self.topk,
             N=self.N,
         )
 
