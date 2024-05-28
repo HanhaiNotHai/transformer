@@ -1,4 +1,4 @@
-# Implement and optimize the original Transformer
+# Implement and optimize the vanilla Transformer
 
 # Environment
 
