@@ -41,10 +41,10 @@ class Config:
     # model
     ckpt_path: str = 'checkpoint/transformer.ckpt'
     d_model: int = 512
-    dropout: float = 0.1
     h_q: int = 8  # num of q heads
     h_kv: int = 1  # num of k,v heads
     n_position: int = 100  # length of rotary position embedding
+    dropout: float = 0.1
     d_ff: int = 2048
     num_experts: int = 8
     topk: int = 2
@@ -79,10 +79,10 @@ class Config:
             config=self,
             vocab_size=self.vocab_size,
             d_model=self.d_model,
-            dropout=self.dropout,
             h_q=self.h_q,
             h_kv=self.h_kv,
             n_position=self.n_position,
+            dropout=self.dropout,
             d_ff=self.d_ff,
             num_experts=self.num_experts,
             topk=self.topk,
