@@ -22,8 +22,8 @@ class RMSNorm(torch.nn.Module):
     def __init__(self, d_model: int = 512, eps: float = 1e-8) -> None:
         super().__init__()
 
-        self.eps = eps
         self.weight = nn.Parameter(torch.ones(d_model))
+        self.eps = eps
 
     def forward(self, x: Tensor) -> Tensor:
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
@@ -36,19 +36,16 @@ class Embedder(nn.Module):
         self,
         vocab_size: int,
         d_model: int = 512,
-        dropout: float = 0.1,
     ) -> None:
         super().__init__()
 
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.embedding_scaling = sqrt(d_model)
-        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: Tensor) -> Tensor:
         # [b, l] -> [b, l, d_model]
         x = self.embedding(x)
         x *= self.embedding_scaling
-        x = self.dropout(x)
         return x
 
 
@@ -111,6 +108,7 @@ class MultiHeadAttention(nn.Module):
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
+        dropout: float = 0.1,
     ) -> None:
         super().__init__()
 
@@ -120,6 +118,7 @@ class MultiHeadAttention(nn.Module):
         self.d_model = d_model
         self.h_q = h_q
         self.h_kv = h_kv
+        self.dropout = dropout
 
         self.Wq = Project(d_model, d_model)
         self.Wkv = Project(d_model, 2 * self.d_kv)
@@ -161,7 +160,7 @@ class MultiHeadAttention(nn.Module):
         k = k.transpose(-2, -3)
         v = v.transpose(-2, -3)
 
-        x = scaled_dot_product_attention(q, k, v, mask)
+        x = scaled_dot_product_attention(q, k, v, mask, self.dropout if self.training else 0)
         # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
         x = x.transpose(-2, -3)
         # [b, l, h_q, d_head] -> [b, l, d_model]
@@ -180,6 +179,7 @@ class MultiHeadSelfAttention(nn.Module):
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
+        dropout: float = 0.1,
         kv_cache: bool = False,
     ) -> None:
         super().__init__()
@@ -191,6 +191,7 @@ class MultiHeadSelfAttention(nn.Module):
         self.d_model = d_model
         self.h_q = h_q
         self.h_kv = h_kv
+        self.dropout = dropout
 
         self.Wqkv = Project(d_model, (h_q + 2 * h_kv) * self.d_head)
         self.rotary_position_embedding = RotaryPositionEmbedding(self.d_head, n_position)
@@ -236,7 +237,7 @@ class MultiHeadSelfAttention(nn.Module):
         k = k.transpose(-2, -3)
         v = v.transpose(-2, -3)
 
-        x = scaled_dot_product_attention(q, k, v, mask)
+        x = scaled_dot_product_attention(q, k, v, mask, self.dropout if self.training else 0)
         # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
         x = x.transpose(-2, -3)
         # [b, l, h_q, d_head] -> [b, l, d_model]
@@ -301,31 +302,27 @@ class EncoderLayer(nn.Module):
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
+        dropout: float = 0.1,
         d_ff: int = 2048,
         num_experts: int = 8,
         topk: int = 2,
-        dropout: float = 0.1,
     ) -> None:
         super().__init__()
 
-        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, n_position)
-        self.mha_dropout = nn.Dropout(dropout)
+        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, n_position, dropout)
         self.mha_norm = RMSNorm(d_model)
 
         self.ffn = MixtureOfExperts(d_model, d_ff, num_experts, topk)
-        self.ffn_dropout = nn.Dropout(dropout)
         self.ffn_norm = RMSNorm(d_model)
 
     def forward(self, x: Tensor, x_mask: Tensor = None) -> Tensor:
         residual = x
         x = self.self_mha(x, x_mask)
-        x = self.mha_dropout(x)
         x += residual
         x = self.mha_norm(x)
 
         residual = x
         x = self.ffn(x)
-        x = self.ffn_dropout(x)
         x += residual
         x = self.ffn_norm(x)
 
@@ -340,16 +337,16 @@ class Encoder(nn.Module):
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
+        dropout: float = 0.1,
         d_ff: int = 2048,
         num_experts: int = 8,
         topk: int = 2,
-        dropout: float = 0.1,
         N: int = 6,  # num of encoder layers
     ) -> None:
         super().__init__()
 
         encoder_layer = EncoderLayer(
-            d_model, h_q, h_kv, n_position, d_ff, num_experts, topk, dropout
+            d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk
         )
         self.layers = nn.ModuleList(deepcopy(encoder_layer) for _ in range(N))
 
@@ -367,23 +364,22 @@ class DecoderLayer(nn.Module):
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
+        dropout: float = 0.1,
         d_ff: int = 2048,
         num_experts: int = 8,
         topk: int = 2,
-        dropout: float = 0.1,
     ) -> None:
         super().__init__()
 
-        self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, n_position, kv_cache=True)
-        self.self_mha_dropout = nn.Dropout(dropout)
+        self.self_mha = MultiHeadSelfAttention(
+            d_model, h_q, h_kv, n_position, dropout, kv_cache=True
+        )
         self.self_mha_norm = RMSNorm(d_model)
 
-        self.mha = MultiHeadAttention(d_model, h_q, h_kv, n_position)
-        self.mha_dropout = nn.Dropout(dropout)
+        self.mha = MultiHeadAttention(d_model, h_q, h_kv, n_position, dropout)
         self.mha_norm = RMSNorm(d_model)
 
         self.ffn = MixtureOfExperts(d_model, d_ff, num_experts, topk)
-        self.ffn_dropout = nn.Dropout(dropout)
         self.ffn_norm = RMSNorm(d_model)
 
     def forward(
@@ -402,19 +398,16 @@ class DecoderLayer(nn.Module):
 
         residual = y
         y = self.self_mha(y, y_mask, kv_cache, i)
-        x = self.self_mha_dropout(x)
         y += residual
         y = self.self_mha_norm(y)
 
         residual = y
         y = self.mha(y, x, x_mask, i)
-        x = self.mha_dropout(x)
         y += residual
         y = self.mha_norm(y)
 
         residual = y
         y = self.ffn(y)
-        x = self.ffn_dropout(x)
         y += residual
         y = self.ffn_norm(y)
 
@@ -429,16 +422,16 @@ class Decoder(nn.Module):
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
+        dropout: float = 0.1,
         d_ff: int = 2048,
         num_experts: int = 8,
         topk: int = 2,
-        dropout: float = 0.1,
         N: int = 6,  # num of decoder layers
     ) -> None:
         super().__init__()
 
         decoder_layer = DecoderLayer(
-            d_model, h_q, h_kv, n_position, d_ff, num_experts, topk, dropout
+            d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk
         )
         self.layers = nn.ModuleList(deepcopy(decoder_layer) for _ in range(N))
 
@@ -468,10 +461,10 @@ class Transformer(nn.Module):
         config: Config,
         vocab_size: int,
         d_model: int = 512,
-        dropout: float = 0.1,
         h_q: int = 8,  # num of q heads
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
+        dropout: float = 0.1,
         d_ff: int = 2048,
         num_experts: int = 8,
         topk: int = 2,
@@ -480,9 +473,9 @@ class Transformer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.embedder = Embedder(vocab_size, d_model, dropout)
-        self.encoder = Encoder(d_model, h_q, h_kv, n_position, d_ff, num_experts, topk, dropout, N)
-        self.decoder = Decoder(d_model, h_q, h_kv, n_position, d_ff, num_experts, topk, dropout, N)
+        self.embedder = Embedder(vocab_size, d_model)
+        self.encoder = Encoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
+        self.decoder = Decoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
         self.linear = nn.Linear(d_model, vocab_size)
 
         # share the same weight matrix between the two embedding layers
