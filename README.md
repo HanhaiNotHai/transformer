@@ -1,5 +1,7 @@
 # Implement and optimize the vanilla Transformer
 
+Transformer 8x67M. Total parameters: 332M. Activated parameters: 105M.
+
 # Environment
 
 You can create a conda environment with `conda env create -f environment.yml` or following commands.

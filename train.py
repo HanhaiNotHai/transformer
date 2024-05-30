@@ -35,7 +35,7 @@ class TrainDataloader(DataLoader):
 
         print(f'Reading {file} ...')
         with open(file) as f:
-            text_dataset = f.read().splitlines()
+            text_dataset = f.read().splitlines()[::-1]
         text_batched_dataset = list(batched(text_dataset, self.batch_size))
         print(f'Encoding {file} ...')
         tensor_dataset = list(map(self.tokenizer.encode_batch, tqdm(text_batched_dataset)))

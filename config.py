@@ -16,7 +16,7 @@ class Config:
 
     # tokenizer
     vocab_size: int = 37000
-    train_max_len: int = 16
+    train_max_len: int = 32
     tokenizer_dir = 'tokenizer/'
     vocab_filename: str = tokenizer_dir + 'vocab.json'
     merges_filename: str = tokenizer_dir + 'merges.txt'
@@ -31,7 +31,7 @@ class Config:
     eos_token: str = special_tokens[eos_id]
 
     # data
-    batch_size: int = 512 + 256 + 64
+    batch_size: int = 128 + 64
     dataset_dir = 'dataset/wmt14en_de/'
     train_src = dataset_dir + 'train.en'
     train_tgt = dataset_dir + 'train.de'
@@ -51,10 +51,10 @@ class Config:
     N: int = 6  # num of encoder,decoder layers
 
     # train
-    warmup_steps: int = 14000
+    warmup_steps: int = 4000
+    epochs: int = 20
     eval_save_per_steps: int = 1000
     n_best_models: int = 5  # num of best models to save
-    epochs: int = 200
     label_smoothing: float = 0.1
     betas: tuple[float, float] = (0.9, 0.98)
     eps: float = 1e-9

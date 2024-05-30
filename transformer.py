@@ -1,5 +1,4 @@
 from copy import deepcopy
-from math import sqrt
 
 import torch
 from torch import Tensor, nn
@@ -22,31 +21,11 @@ class RMSNorm(torch.nn.Module):
     def __init__(self, d_model: int = 512, eps: float = 1e-8) -> None:
         super().__init__()
 
-        self.weight = nn.Parameter(torch.ones(d_model))
         self.eps = eps
+        self.weight = nn.Parameter(torch.ones(d_model))
 
     def forward(self, x: Tensor) -> Tensor:
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
-
-
-class Embedder(nn.Module):
-    '''Combine the two embedding and positional encoding layers into one.'''
-
-    def __init__(
-        self,
-        vocab_size: int,
-        d_model: int = 512,
-    ) -> None:
-        super().__init__()
-
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.embedding_scaling = sqrt(d_model)
-
-    def forward(self, x: Tensor) -> Tensor:
-        # [b, l] -> [b, l, d_model]
-        x = self.embedding(x)
-        x *= self.embedding_scaling
-        return x
 
 
 @Singleton
@@ -206,7 +185,7 @@ class MultiHeadSelfAttention(nn.Module):
             self.register_buffer('v_cache', v_cache, False)
 
     def forward(
-        self, x: Tensor, mask: Tensor = None, kv_cache: bool = False, i: int = None
+        self, x: Tensor, mask: Tensor = None, i: int = None, kv_cache: bool = False
     ) -> Tensor:
         # [b, l, d_model] -> [b, l, (h_q + 2 * h_kv) * d_head]
         qkv: Tensor = self.Wqkv(x)
@@ -270,12 +249,12 @@ class MixtureOfExperts(nn.Module):
     ) -> None:
         super().__init__()
 
+        self.topk = topk
+
         self.gate = Project(d_model, num_experts)
-        self.softmax = nn.Softmax(1)
+        self.softmax = nn.Softmax(-1)
         expert = FeedForward(d_model, d_ff)
         self.experts = nn.ModuleList(deepcopy(expert) for _ in range(num_experts))
-
-        self.topk = topk
 
     def forward(self, x: Tensor) -> Tensor:
         # [b, l, num_experts]
@@ -388,8 +367,8 @@ class DecoderLayer(nn.Module):
         x: Tensor,
         y_mask: Tensor = None,
         x_mask: Tensor = None,
-        kv_cache: bool = False,
         i: int = None,
+        kv_cache: bool = False,
     ) -> Tensor:
         '''
         y: decoder input
@@ -397,7 +376,7 @@ class DecoderLayer(nn.Module):
         '''
 
         residual = y
-        y = self.self_mha(y, y_mask, kv_cache, i)
+        y = self.self_mha(y, y_mask, i, kv_cache)
         y += residual
         y = self.self_mha_norm(y)
 
@@ -441,8 +420,8 @@ class Decoder(nn.Module):
         x: Tensor,
         y_mask: Tensor = None,
         x_mask: Tensor = None,
-        kv_cache: bool = False,
         i: int = None,
+        kv_cache: bool = False,
     ) -> Tensor:
         '''
         y: decoder input
@@ -450,7 +429,7 @@ class Decoder(nn.Module):
         '''
 
         for layer in self.layers:
-            y = layer(y, x, y_mask, x_mask, kv_cache, i)
+            y = layer(y, x, y_mask, x_mask, i, kv_cache)
         return y
 
 
@@ -473,14 +452,14 @@ class Transformer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.embedder = Embedder(vocab_size, d_model)
+        self.embedding = nn.Embedding(vocab_size, d_model)
         self.encoder = Encoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
         self.decoder = Decoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
         self.linear = nn.Linear(d_model, vocab_size)
 
         # share the same weight matrix between the two embedding layers
         # and the pre-softmax linear transformation
-        self.linear.weight = self.embedder.embedding.weight
+        self.linear.weight = self.embedding.weight
 
         # Prevent leftward information flow in the decoder.
         subsequent_mask = torch.ones([config.n_position, config.n_position]).bool().tril()
@@ -509,20 +488,17 @@ class Transformer(nn.Module):
         self.beam_size = config.beam_size
         self.length_penalty = config.length_penalty
 
-    def get_subsequent_mask(self, seq_len: int) -> Tensor:
-        return self.subsequent_mask[:seq_len, :seq_len]
-
     def forward(self, x: Tensor, y: Tensor, x_mask: Tensor, y_mask: Tensor) -> Tensor:
         # [b, l] -> [b, 1, 1, l]
         x_mask.unsqueeze_(1).unsqueeze_(1)
         # WHY: (subsequent_mask & y_mask) is faster than (y_mask & subsequent_mask).
         # [l - 1, l - 1] & [b, 1, l - 1] -> [b, l - 1, l - 1]
-        y_mask = self.get_subsequent_mask(y.shape[1]) & y_mask.unsqueeze(1)
+        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze(1)
         # [b, l - 1, l - 1] -> [b, 1, l - 1, l - 1]
         y_mask.unsqueeze_(1)
 
-        x = self.embedder(x)
-        y = self.embedder(y)
+        x = self.embedding(x)
+        y = self.embedding(y)
         x = self.encoder(x, x_mask)
         y = self.decoder(y, x, y_mask, x_mask)
         y = self.linear(y)
@@ -533,7 +509,7 @@ class Transformer(nn.Module):
 
     @torch.inference_mode()
     def inference(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        x = self.embedder(x)
+        x = self.embedding(x)
         x = self.encoder(x)
 
         seq_len = min(x.shape[1] + 50, self.max_len)
@@ -541,8 +517,8 @@ class Transformer(nn.Module):
         y[0] = self.bos_id
 
         for i in range(y.shape[0] - 1):
-            y_emb = self.embedder(y[i : i + 1])
-            dec_out = self.decoder(y_emb, x, kv_cache=True, i=i)
+            y_emb = self.embedding(y[i : i + 1])
+            dec_out = self.decoder(y_emb, x, i=i, kv_cache=True)
             logits: Tensor = self.linear(dec_out)
 
             y[i + 1] = logits.argmax()
