@@ -39,6 +39,32 @@ class PositionalEncoding(nn.Module):
         return x
 
 
+class Embedder(nn.Module):
+    '''Combine the two embedding and positional encoding layers into one.'''
+
+    def __init__(
+        self,
+        vocab_size: int,
+        d_model: int = 512,
+        n_position: int = 100,  # positional encoding length
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.embedding_scaling = sqrt(d_model)
+        self.positional_encoding = PositionalEncoding(d_model, n_position)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: Tensor, i: int = None) -> Tensor:
+        # [b, l] -> [b, l, d_model]
+        x = self.embedding(x)
+        x *= self.embedding_scaling
+        x = self.positional_encoding(x, i)
+        x = self.dropout(x)
+        return x
+
+
 class ScaledDotProductAttention(nn.Module):
 
     def __init__(self, dk: int = 64) -> None:
