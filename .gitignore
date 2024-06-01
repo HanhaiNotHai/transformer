@@ -1,5 +1,5 @@
 .vscode/
-checkpoint/
+checkpoint
 dataset/wmt14en_de/train.*
 orig/
 result/

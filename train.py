@@ -64,22 +64,25 @@ class Scheduler(torch.optim.lr_scheduler.LRScheduler):
 
 class Saver:
 
-    def __init__(self, transformer: Transformer, n_best_models: int = 10) -> None:
+    def __init__(self, transformer: Transformer, n_best_models: int = None) -> None:
         self.transformer = transformer
-        self.n_best_models = n_best_models
-
         self.save_dir = 'checkpoint/' + strftime('%m%d_%X/')
+        os.makedirs(self.save_dir, exist_ok=True)
 
-        # (score, -step, save_path)
-        self.best_models = []
-        self.save = self.save1
+        if n_best_models is None:
+            self.save = self.save0
+        else:
+            self.save = self.save1
+            # (score, -step, save_path)
+            self.best_models: list[tuple[float, int, str]] = []
+            self.n_best_models = n_best_models
+
+    def save0(self, score: float, epoch: int, step: int) -> None:
+        save_path = self.save_dir + f'{score:.6f}_{epoch}_{step}.ckpt'
+        torch.save(self.transformer.state_dict(), save_path)
 
     def save1(self, score: float, epoch: int, step: int) -> None:
         '''len(self.best_models) < self.n_best_models'''
-
-        # Make save_dir on first save.
-        if not self.best_models:
-            os.makedirs(self.save_dir)
 
         save_path = self.save_dir + f'{score:.6f}_{epoch}_{step}.ckpt'
         heapq.heappush(self.best_models, (score, -step, save_path))

@@ -31,7 +31,7 @@ class Config:
     eos_token: str = special_tokens[eos_id]
 
     # data
-    batch_size: int = 128 + 64
+    batch_size: int = 128 + 32
     dataset_dir = 'dataset/wmt14en_de/'
     train_src = dataset_dir + 'train.en'
     train_tgt = dataset_dir + 'train.de'
