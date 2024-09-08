@@ -24,14 +24,16 @@ class TrainDataloader(DataLoader):
         self.train_y_dataset = self.read(config.train_tgt)
         print('Done.')
 
-        assert len(self.train_x_dataset) == len(self.train_y_dataset)
+        assert len(self.train_x_dataset) == len(
+            self.train_y_dataset
+        ), 'x and y of train dataset should have the same length.'
         self.len = len(self.train_x_dataset)
 
     def read(self, file: str) -> list[Tensor]:
         encoded_file = file + f'.encoded{self.batch_size}'
         if os.path.exists(encoded_file):
             print(f'Loading {encoded_file} ...')
-            return torch.load(encoded_file)
+            return torch.load(encoded_file, weights_only=True)
 
         print(f'Reading {file} ...')
         with open(file) as f:
@@ -64,7 +66,7 @@ class Scheduler(torch.optim.lr_scheduler.LRScheduler):
 
 class Saver:
 
-    def __init__(self, transformer: Transformer, n_best_models: int = None) -> None:
+    def __init__(self, transformer: Transformer, n_best_models: int | None = None) -> None:
         self.transformer = transformer
         self.save_dir = 'checkpoint/' + strftime('%m%d_%X/')
 
@@ -140,7 +142,7 @@ def main() -> None:
             y_pad_mask = y_pad_mask[:, :-1]
 
             optimizer.zero_grad()
-            logits: Tensor = transformer(x, y, x_pad_mask, y_pad_mask)
+            logits = transformer(x, y, x_pad_mask, y_pad_mask)
             # [b, l - 1, vocab_size] -> [b * (l - 1), vocab_size]
             logits = logits.reshape(-1, logits.shape[-1])
             loss: Tensor = cross_entropy_loss(logits, target)

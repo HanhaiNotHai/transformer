@@ -16,6 +16,7 @@ def Singleton(cls):
 
 
 class DataLoader:
+    len: int
 
     def __len__(self) -> int:
         return self.len
@@ -33,7 +34,7 @@ class DataLoader:
 
 class TestDataloader(DataLoader):
 
-    def __init__(self, config: Config, tokenizer: Tokenizer, n: int = None) -> None:
+    def __init__(self, config: Config, tokenizer: Tokenizer, n: int | None = None) -> None:
         with open(config.test_src) as f:
             self.test_src_dataset = f.read().splitlines()
         self.test_x_dataset = list(map(tokenizer.encode, self.test_src_dataset))
@@ -41,7 +42,9 @@ class TestDataloader(DataLoader):
         with open(config.test_tgt) as f:
             self.test_tgt_dataset = f.read().splitlines()
 
-        assert len(self.test_x_dataset) == len(self.test_src_dataset) == len(self.test_tgt_dataset)
+        assert len(self.test_src_dataset) == len(
+            self.test_tgt_dataset
+        ), 'src and tgt of test dataset should have the same length'
         if n is None:
             self.len = len(self.test_x_dataset)
         else:

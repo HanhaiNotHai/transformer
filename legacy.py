@@ -1,11 +1,16 @@
 from copy import deepcopy
 from math import inf, sqrt
+from typing import Callable
 
 import torch
 from torch import Tensor, nn
 
 
-class Project(nn.Linear):
+class Module(nn.Module):
+    __call__: Callable[..., Tensor]
+
+
+class Project(nn.Linear, Module):
 
     def __init__(
         self, in_features: int, out_features: int, bias: bool = False, device=None, dtype=None
@@ -13,7 +18,7 @@ class Project(nn.Linear):
         super().__init__(in_features, out_features, bias, device, dtype)
 
 
-class PositionalEncoding(nn.Module):
+class PositionalEncoding(Module):
 
     def __init__(self, d_model: int = 512, n_position: int = 100):
         super().__init__()
@@ -29,9 +34,9 @@ class PositionalEncoding(nn.Module):
         PE[:, 1::2] = torch.cos(x)
         # Not a parameter, but to(device) with nn.Module.
         self.PE: Tensor
-        self.register_buffer('PE', PE, False)
+        self.register_buffer('PE', PE, persistent=False)
 
-    def forward(self, x: Tensor, i: int = None) -> Tensor:
+    def forward(self, x: Tensor, i: int | None = None) -> Tensor:
         if i is None:
             x += self.PE[: x.shape[-2]]
         else:
@@ -39,7 +44,7 @@ class PositionalEncoding(nn.Module):
         return x
 
 
-class Embedder(nn.Module):
+class Embedder(Module):
     '''Combine the two embedding and positional encoding layers into one.'''
 
     def __init__(
@@ -56,7 +61,7 @@ class Embedder(nn.Module):
         self.positional_encoding = PositionalEncoding(d_model, n_position)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: Tensor, i: int = None) -> Tensor:
+    def forward(self, x: Tensor, i: int | None = None) -> Tensor:
         # [b, l] -> [b, l, d_model]
         x = self.embedding(x)
         x *= self.embedding_scaling
@@ -65,7 +70,7 @@ class Embedder(nn.Module):
         return x
 
 
-class ScaledDotProductAttention(nn.Module):
+class ScaledDotProductAttention(Module):
 
     def __init__(self, dk: int = 64) -> None:
         super().__init__()
@@ -73,7 +78,7 @@ class ScaledDotProductAttention(nn.Module):
         self.scaling = 1 / sqrt(dk)
         self.softmax = nn.Softmax(-1)
 
-    def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None) -> Tensor:
+    def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor | None = None) -> Tensor:
         # [b, l, dk] -> [b, dk, l]
         k.transpose_(-1, -2)
         # [b, l, l]
@@ -85,7 +90,7 @@ class ScaledDotProductAttention(nn.Module):
         return self.softmax(score) @ v
 
 
-class MultiHeadAttention(nn.Module):
+class MultiHeadAttention(Module):
 
     def __init__(self, d_model: int = 512, h: int = 8) -> None:
         super().__init__()
@@ -100,7 +105,7 @@ class MultiHeadAttention(nn.Module):
         self.attention = ScaledDotProductAttention(dk)
         self.Wo = Project(d_model, d_model)
 
-    def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None) -> Tensor:
+    def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor | None = None) -> Tensor:
         # [b, l, d_model] -> [b, l, d_head] * h
         qs = [Wq(q) for Wq in self.Wq]
         ks = [Wk(k) for Wk in self.Wk]
@@ -115,7 +120,7 @@ class MultiHeadAttention(nn.Module):
         return x
 
 
-class FeedForward(nn.Module):
+class FeedForward(Module):
 
     def __init__(self, d_model: int = 512, d_ff: int = 2048) -> None:
         super().__init__()

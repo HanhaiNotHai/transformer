@@ -8,7 +8,7 @@ from config import Config
 
 class Tokenizer:
 
-    def __init__(self, config: Config, max_len: int = None) -> None:
+    def __init__(self, config: Config, max_len: int | None = None) -> None:
         '''
         Encoding process is as follows.
         encode -> truncate -> post process -> pad
@@ -38,7 +38,7 @@ class Tokenizer:
         tokenizer.train(
             [Config.train_src, Config.train_tgt],
             vocab_size=Config.vocab_size,
-            special_tokens=Config.special_tokens,
+            special_tokens=list(Config.special_tokens),
         )
         tokenizer.save_model(Config.tokenizer_dir)
 
