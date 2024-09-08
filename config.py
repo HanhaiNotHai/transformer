@@ -32,7 +32,7 @@ class Config:
 
     # data
     batch_size: int = 128 + 32
-    dataset_dir: str = 'dataset/wmt14en_de/'
+    dataset_dir: str = 'dataset/wmt14en2de/'
     train_src: str = dataset_dir + 'train.en'
     train_tgt: str = dataset_dir + 'train.de'
     test_src: str = dataset_dir + 'test.en'

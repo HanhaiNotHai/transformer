@@ -1,11 +1,11 @@
 .DS_Store
 .vscode/
 checkpoint
-dataset/wmt14en_de/train.*
+dataset/wmt14en2de/train.*
 orig
 result/
 wandb/
-test*
+/test*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -31,7 +31,7 @@ CORPORA=(
 
 src=en
 tgt=de
-prep=dataset/wmt14en_de
+prep=dataset/wmt14en2de
 orig=orig
 
 mkdir -p $orig $prep
