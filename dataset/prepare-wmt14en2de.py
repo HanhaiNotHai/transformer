@@ -94,6 +94,7 @@ print('len_after:', len_after := len(src))
 print('diff:', diff := len_before - len_after)
 
 src, tgt = zip(*random.sample(list(zip(src, tgt)), config.n_test))
+src, tgt = zip(*sorted(zip(src, tgt), key=lambda st: get_len(st[0]) + get_len(st[1])))
 
 with open(src_file, 'w') as src_io, open(tgt_file, 'w') as tgt_io:
     src_io.write('\n'.join(src))
