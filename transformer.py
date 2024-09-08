@@ -453,14 +453,11 @@ class Transformer(nn.Module):
     ) -> None:
         super().__init__()
 
+        # share the same weight matrix between the two embedding layers
+        # and the pre-softmax linear transformation
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.encoder = Encoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
         self.decoder = Decoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
-        self.linear = nn.Linear(d_model, vocab_size)
-
-        # share the same weight matrix between the two embedding layers
-        # and the pre-softmax linear transformation
-        self.linear.weight = self.embedding.weight
 
         # Prevent leftward information flow in the decoder.
         subsequent_mask = torch.ones([config.n_position, config.n_position]).bool().tril()
@@ -502,7 +499,7 @@ class Transformer(nn.Module):
         y = self.embedding(y)
         x = self.encoder(x, x_mask)
         y = self.decoder(y, x, y_mask, x_mask)
-        y = self.linear(y)
+        y = y @ self.embedding.weight.T
         return y
 
     def save(self, ckpt_path: str) -> None:
@@ -520,7 +517,7 @@ class Transformer(nn.Module):
         for i in range(y.shape[1] - 1):
             y_emb = self.embedding(y[:, i : i + 1])
             dec_out = self.decoder(y_emb, x, i=i, kv_cache=True)
-            logits: Tensor = self.linear(dec_out)
+            logits: Tensor = dec_out @ self.embedding.weight.T
 
             y[0, i + 1] = logits.argmax()
             if y[0, i + 1] == self.eos_id:
