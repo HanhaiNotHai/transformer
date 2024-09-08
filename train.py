@@ -66,8 +66,7 @@ class Saver:
 
     def __init__(self, transformer: Transformer, n_best_models: int = None) -> None:
         self.transformer = transformer
-        self.save_dir = 'checkpoint/' + strftime('%m%d_%X/')
-        os.makedirs(self.save_dir, exist_ok=True)
+        self.makedir = True
 
         if n_best_models is None:
             self.save = self.save0
@@ -78,6 +77,11 @@ class Saver:
             self.n_best_models = n_best_models
 
     def save0(self, score: float, epoch: int, step: int) -> None:
+        if self.makedir:
+            self.save_dir = 'checkpoint/' + strftime('%m%d_%X/')
+            os.makedirs(self.save_dir, exist_ok=True)
+            self.makedir = False
+
         save_path = self.save_dir + f'{score:.6f}_{epoch}_{step}.ckpt'
         torch.save(self.transformer.state_dict(), save_path)
 
@@ -155,7 +159,7 @@ def main() -> None:
             if step % config.eval_save_per_steps == 0:
                 transformer.eval()
                 for x, _, tgt in tqdm(test_dataloader, 'test', leave=False):
-                    x = x.to(transformer.device)
+                    x: Tensor = x.to(transformer.device)
                     y_hat = transformer.inference(x)
                     pred = tokenizer.decode(y_hat)
                     bleu.add_batch(predictions=[pred], references=[tgt])
