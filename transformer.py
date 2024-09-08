@@ -160,6 +160,7 @@ class MultiHeadSelfAttention(nn.Module):
         n_position: int = 100,  # length of rotary position embedding
         dropout: float = 0.1,
         kv_cache: bool = False,
+        inference_batch_size: int = 1,
     ) -> None:
         super().__init__()
 
@@ -177,8 +178,8 @@ class MultiHeadSelfAttention(nn.Module):
         self.Wo = Project(d_model, d_model)
 
         if kv_cache:
-            k_cache = torch.zeros(n_position, h_kv, self.d_head)
-            v_cache = torch.zeros(n_position, h_kv, self.d_head)
+            k_cache = torch.zeros(inference_batch_size, n_position, h_kv, self.d_head)
+            v_cache = torch.zeros(inference_batch_size, n_position, h_kv, self.d_head)
             self.k_cache: Tensor
             self.v_cache: Tensor
             self.register_buffer('k_cache', k_cache, False)
@@ -201,10 +202,10 @@ class MultiHeadSelfAttention(nn.Module):
         k = self.rotary_position_embedding(k, i)
 
         if kv_cache:
-            self.k_cache[i] = k[0]
-            self.v_cache[i] = v[0]
-            k = self.k_cache[: i + 1]
-            v = self.v_cache[: i + 1]
+            self.k_cache[:, i] = k[:, 0]
+            self.v_cache[:, i] = v[:, 0]
+            k = self.k_cache[:, : i + 1]
+            v = self.v_cache[:, : i + 1]
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
@@ -513,17 +514,17 @@ class Transformer(nn.Module):
         x = self.encoder(x)
 
         seq_len = min(x.shape[1] + 50, self.max_len)
-        y = torch.empty([seq_len], dtype=torch.long, device=self.device)
-        y[0] = self.bos_id
+        y = torch.empty([1, seq_len], dtype=torch.long, device=self.device)
+        y[0, 0] = self.bos_id
 
-        for i in range(y.shape[0] - 1):
-            y_emb = self.embedding(y[i : i + 1])
+        for i in range(y.shape[1] - 1):
+            y_emb = self.embedding(y[:, i : i + 1])
             dec_out = self.decoder(y_emb, x, i=i, kv_cache=True)
             logits: Tensor = self.linear(dec_out)
 
-            y[i + 1] = logits.argmax()
-            if y[i + 1] == self.eos_id:
+            y[0, i + 1] = logits.argmax()
+            if y[0, i + 1] == self.eos_id:
                 # Remove BOS and EOS ids.
-                return y[1 : i + 1]
+                return y[0, 1 : i + 1]
         # Remove BOS id.
-        return y[1:]
+        return y[0, 1:]

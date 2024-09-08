@@ -50,7 +50,7 @@ class Tokenizer:
 
     def encode(self, sequence: str) -> Tensor:
         encoding = self.tokenizer.encode(sequence)
-        tokens = torch.tensor(encoding.ids)
+        tokens = torch.tensor(encoding.ids).unsqueeze_(0)
         return tokens
 
     def decode(self, y_hat: Tensor) -> str:
