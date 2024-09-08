@@ -1,6 +1,6 @@
 # Implement and optimize the vanilla Transformer
 
-Transformer 8x67M. Total parameters: 332M. Activated parameters: 105M.
+Transformer 8x67M or 322M-A105M.
 
 # Features
 
