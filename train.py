@@ -66,7 +66,7 @@ class Saver:
 
     def __init__(self, transformer: Transformer, n_best_models: int = None) -> None:
         self.transformer = transformer
-        self.makedir = True
+        self.save_dir = 'checkpoint/' + strftime('%m%d_%X/')
 
         if n_best_models is None:
             self.save = self.save0
@@ -77,17 +77,14 @@ class Saver:
             self.n_best_models = n_best_models
 
     def save0(self, score: float, epoch: int, step: int) -> None:
-        if self.makedir:
-            self.save_dir = 'checkpoint/' + strftime('%m%d_%X/')
-            os.makedirs(self.save_dir, exist_ok=True)
-            self.makedir = False
-
+        os.makedirs(self.save_dir, exist_ok=True)
         save_path = self.save_dir + f'{score:.6f}_{epoch}_{step}.ckpt'
         torch.save(self.transformer.state_dict(), save_path)
 
     def save1(self, score: float, epoch: int, step: int) -> None:
         '''len(self.best_models) < self.n_best_models'''
 
+        os.makedirs(self.save_dir, exist_ok=True)
         save_path = self.save_dir + f'{score:.6f}_{epoch}_{step}.ckpt'
         heapq.heappush(self.best_models, (score, -step, save_path))
         torch.save(self.transformer.state_dict(), save_path)
