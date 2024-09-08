@@ -1,7 +1,8 @@
+.DS_Store
 .vscode/
 checkpoint
 dataset/wmt14en_de/train.*
-orig/
+orig
 result/
 wandb/
 test*

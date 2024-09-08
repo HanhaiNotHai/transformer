@@ -7,12 +7,12 @@ import torch
 @dataclass
 class Config:
     # Set proxy if you are using.
-    proxy = None  # '127.0.0.1:7890'
+    proxy = None  # '127.0.0.1:7897'
     # Use wandb or not.
     WANDB: bool = True
 
     # device
-    cuda: bool = True
+    use_gpu: bool = True
 
     # tokenizer
     vocab_size: int = 37000
@@ -67,11 +67,20 @@ class Config:
     def __post_init__(self) -> None:
         assert self.d_model % self.h_q == 0, 'd_model must be divisible by h_q'
         assert self.h_q % self.h_kv == 0, 'h_q must be divisible by h_kv'
-        self.device = torch.device('cuda' if self.cuda and torch.cuda.is_available() else 'cpu')
-        if self.cuda and not torch.cuda.is_available():
-            print('Warning: CUDA is not available, using CPU instead.')
+
         if self.proxy is not None:
             os.environ['http_proxy'] = os.environ['https_proxy'] = self.proxy
+
+        if self.use_gpu:
+            if torch.mps.is_available():
+                self.device = torch.device('mps')
+                print('Using MPS.')
+            elif torch.cuda.is_available():
+                self.device = torch.device('cuda')
+                print('Using CUDA.')
+            else:
+                self.device = torch.device('cpu')
+                print('GPU is not available, using CPU instead.')
 
     @property
     def model_config(self) -> dict:
