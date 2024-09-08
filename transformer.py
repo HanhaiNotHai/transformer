@@ -178,8 +178,8 @@ class MultiHeadSelfAttention(nn.Module):
         self.Wo = Project(d_model, d_model)
 
         if kv_cache:
-            k_cache = torch.zeros(inference_batch_size, n_position, h_kv, self.d_head)
-            v_cache = torch.zeros(inference_batch_size, n_position, h_kv, self.d_head)
+            k_cache = torch.empty(inference_batch_size, n_position, h_kv, self.d_head)
+            v_cache = torch.empty(inference_batch_size, n_position, h_kv, self.d_head)
             self.k_cache: Tensor
             self.v_cache: Tensor
             self.register_buffer('k_cache', k_cache, False)
