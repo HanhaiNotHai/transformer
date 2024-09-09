@@ -13,7 +13,7 @@ if status != 0:
     raise RuntimeError('prepare-wmt14en2de.sh failed')
 
 
-print('prepare train files...')
+print('preparing train files...')
 src_file = config.train_src
 tgt_file = config.train_tgt
 
@@ -59,15 +59,17 @@ while True:
 
 # 'Sentence pairs were batched together by approximate sequence length' in paper.
 # Here sort by sum of the length of the source and target tokens.
+print('sorting train dataset...')
 get_len = lambda text: len(tokenizer.tokenizer.encode(text).ids)
 src, tgt = zip(*sorted(zip(src, tgt), key=lambda st: get_len(st[0]) + get_len(st[1])))
 
+print('saving train files...')
 with open(src_file, 'w') as src_io, open(tgt_file, 'w') as tgt_io:
     src_io.write('\n'.join(src))
     tgt_io.write('\n'.join(tgt))
 
 
-print('prepare test files...')
+print('preparing test files...')
 src_file = config.test_src
 tgt_file = config.test_tgt
 
@@ -93,9 +95,12 @@ tgt = tgt_out
 print('len_after:', len_after := len(src))
 print('diff:', diff := len_before - len_after)
 
+print('sampling test dataset...')
 src, tgt = zip(*random.sample(list(zip(src, tgt)), config.n_test))
+print('sorting test dataset...')
 src, tgt = zip(*sorted(zip(src, tgt), key=lambda st: get_len(st[0]) + get_len(st[1])))
 
+print('saving test files...')
 with open(src_file, 'w') as src_io, open(tgt_file, 'w') as tgt_io:
     src_io.write('\n'.join(src))
     tgt_io.write('\n'.join(tgt))
