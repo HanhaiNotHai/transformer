@@ -134,17 +134,15 @@ def main() -> None:
         for batch in tqdm(train_dataloader, 'train', leave=False):
             step += 1
             x, x_pad_mask, y, y_pad_mask = to(batch, transformer.device)
-            # [b * (l - 1)]
-            target = y[:, 1:].reshape(-1)
             # [b, l - 1]
+            target = y[:, 1:]
             y = y[:, :-1]
-            # [b, l - 1]
             y_pad_mask = y_pad_mask[:, :-1]
 
             optimizer.zero_grad()
             logits = transformer(x, y, x_pad_mask, y_pad_mask)
-            # [b, l - 1, vocab_size] -> [b * (l - 1), vocab_size]
-            logits = logits.reshape(-1, logits.shape[-1])
+            # [b, l - 1, vocab_size] -> [b, vocab_size, l - 1]
+            logits.transpose_(1, 2)
             loss: Tensor = cross_entropy_loss(logits, target)
             loss.backward()
             optimizer.step()
