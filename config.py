@@ -81,6 +81,9 @@ class Config:
             else:
                 self.device = torch.device('cpu')
                 print('GPU is not available, using CPU instead.')
+        else:
+            self.device = torch.device('cpu')
+            print('Using CPU.')
 
     @property
     def model_config(self) -> dict:
