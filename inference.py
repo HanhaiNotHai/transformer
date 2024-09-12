@@ -21,7 +21,6 @@ def main() -> None:
     result = ['source\ttarget\tpred\tBLEU']
 
     for x, src, tgt in tqdm(test_dataloader):
-        x: Tensor = x.to(transformer.device)
         y_hat = transformer.inference(x)
         pred = tokenizer.decode(y_hat)
 

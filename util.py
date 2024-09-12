@@ -53,6 +53,8 @@ class TestDataloader(DataLoader):
             self.test_src_dataset = self.test_src_dataset[:n]
             self.test_tgt_dataset = self.test_tgt_dataset[:n]
 
+        self.test_x_dataset = list(map(lambda x: x.to(config.device), self.test_x_dataset))
+
     def __getitem__(self, index) -> tuple[Tensor, str, str]:
         return (
             self.test_x_dataset[index],

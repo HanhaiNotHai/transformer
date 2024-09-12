@@ -29,6 +29,13 @@ class TrainDataloader(DataLoader):
         ), 'x and y of train dataset should have the same length.'
         self.len = len(self.train_x_dataset)
 
+        self.train_x_dataset = list(
+            map(lambda x: tuple(map(lambda y: y.to(config.device), x)), self.train_x_dataset)
+        )
+        self.train_y_dataset = list(
+            map(lambda x: tuple(map(lambda y: y.to(config.device), x)), self.train_y_dataset)
+        )
+
     def read(self, file: str) -> list[Tensor]:
         encoded_file = file + f'.encoded{self.batch_size}'
         if os.path.exists(encoded_file):
@@ -104,10 +111,6 @@ class Saver:
             torch.save(self.transformer.state_dict(), save_path)
 
 
-def to(batch: tuple[Tensor, ...], device: torch.device) -> tuple[Tensor, ...]:
-    return (x.to(device) for x in batch)
-
-
 def main() -> None:
     config = Config()
     tokenizer = Tokenizer(config)
@@ -132,13 +135,13 @@ def main() -> None:
         wandb.log({'epoch': epoch}) if config.WANDB else None
 
         with tqdm(train_dataloader, desc='train', leave=False) as pbar:
-            for batch in pbar:
+            for x, x_pad_mask, y, y_pad_mask in pbar:
                 pbar.set_postfix_str(
                     f'{torch.mps.current_allocated_memory() / 2**30:.1f} / '
                     f'{torch.mps.driver_allocated_memory() / 2**30:.1f} GB'
                 )
                 step += 1
-                x, x_pad_mask, y, y_pad_mask = to(batch, transformer.device)
+
                 # [b, l - 1]
                 target = y[:, 1:]
                 y = y[:, :-1]
@@ -162,7 +165,6 @@ def main() -> None:
                 if step % config.eval_save_per_steps == 0:
                     transformer.eval()
                     for x, _, tgt in tqdm(test_dataloader, 'test', leave=False):
-                        x: Tensor = x.to(transformer.device)
                         y_hat = transformer.inference(x)
                         pred = tokenizer.decode(y_hat)
                         bleu.add_batch(predictions=[pred], references=[tgt])
