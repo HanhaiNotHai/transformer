@@ -26,8 +26,8 @@ class RMSNorm(Module):
     def __init__(self, d_model: int = 512, eps: float = 1e-8) -> None:
         super().__init__()
 
-        self.eps = eps
         self.weight = nn.Parameter(torch.ones(d_model))
+        self.eps = eps
 
     def forward(self, x: Tensor) -> Tensor:
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
@@ -43,20 +43,16 @@ class RotaryPositionEmbedding(Module):
 
         # [d_head // 2]
         theta = 1 / (10000 ** (torch.arange(0, d_head, 2) / d_head))
-        # [d_head]
-        theta = theta.repeat_interleave(2)
-        # [1, d_head]
-        theta.unsqueeze_(0)
-
         # [n_position]
         m = torch.arange(n_position, dtype=theta.dtype)
-        # [n_position, 1]
-        m.unsqueeze_(1)
 
-        # [n_position, d_head]
-        x = m @ theta
-        # [n_position, 1, d_head]
+        # [n_position, d_head // 2]
+        x = torch.outer(m, theta)
+        # [n_position, d_head // 2] -> [n_position, d_head]
+        x = x.repeat_interleave(2, dim=1)
+        # [n_position, d_head] -> [n_position, 1, d_head]
         x.unsqueeze_(1)
+
         cos = torch.cos(x)
         sin = torch.sin(x)
 
