@@ -72,22 +72,25 @@ class Embedder(Module):
 
 class ScaledDotProductAttention(Module):
 
-    def __init__(self, dk: int = 64) -> None:
+    def __init__(self, dk: int = 64, dropout: float = 0.1) -> None:
         super().__init__()
 
         self.scaling = 1 / sqrt(dk)
         self.softmax = nn.Softmax(-1)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor | None = None) -> Tensor:
         # [b, l, dk] -> [b, dk, l]
         k.transpose_(-1, -2)
         # [b, l, l]
-        score = q @ k
-        score *= self.scaling
+        attn = q @ k
+        attn *= self.scaling
         if mask is not None:
-            score.masked_fill_(mask.logical_not(), -inf)
+            attn.masked_fill_(mask.logical_not(), -inf)
+        attn = self.softmax(attn)
+        attn = self.dropout(attn)
         # [b, l, dv]
-        return self.softmax(score) @ v
+        return attn @ v
 
 
 class MultiHeadAttention(Module):
