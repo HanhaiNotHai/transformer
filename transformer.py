@@ -462,7 +462,7 @@ class Transformer(Module):
 
         # share the same weight matrix between the two embedding layers
         # and the pre-softmax linear transformation
-        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.embedding = nn.Embedding(vocab_size, d_model, config.pad_id)
         self.encoder = Encoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
         self.decoder = Decoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
 
