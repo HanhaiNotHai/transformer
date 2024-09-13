@@ -86,6 +86,8 @@ class Saver:
             self.n_best_models = n_best_models
 
     def save0(self, score: float, epoch: int, step: int) -> None:
+        '''save all checkpoints'''
+
         os.makedirs(self.save_dir, exist_ok=True)
         save_path = self.save_dir + f'{score:.6f}_{epoch}_{step}.ckpt'
         torch.save(self.transformer.state_dict(), save_path)

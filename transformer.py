@@ -118,7 +118,7 @@ class MultiHeadAttention(Module):
             # [b, l, d_model] -> [b, l, 2 * h_kv * d_head]
             kv = self.Wkv(x)
             # [b, l, 2 * h_kv * d_head] -> [b, l, h_kv * d_head] * 2
-            k, v = kv.split([self.d_kv, self.d_kv], -1)
+            k, v = kv.split([self.d_kv, self.d_kv], dim=-1)
 
             # [b, l, h_kv * d_head] -> [b, l, h_kv, d_head]
             k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
@@ -134,8 +134,8 @@ class MultiHeadAttention(Module):
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
-            k = k.repeat_interleave(self.G, -2)
-            v = v.repeat_interleave(self.G, -2)
+            k = k.repeat_interleave(self.G, dim=-2)
+            v = v.repeat_interleave(self.G, dim=-2)
 
         # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
         q = q.transpose(-2, -3)
@@ -194,7 +194,7 @@ class MultiHeadSelfAttention(Module):
         # [b, l, d_model] -> [b, l, (h_q + 2 * h_kv) * d_head]
         qkv = self.Wqkv(x)
         # [b, l, (h_q + 2 * h_kv) * self.d_head] -> [b, l, {h_q, h_kv, h_kv} * d_head]
-        q, k, v = qkv.split([self.d_q, self.d_kv, self.d_kv], -1)
+        q, k, v = qkv.split([self.d_q, self.d_kv, self.d_kv], dim=-1)
 
         # [b, l, h * d_head] -> [b, l, h, d_head]
         q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
@@ -212,8 +212,8 @@ class MultiHeadSelfAttention(Module):
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
-            k = k.repeat_interleave(self.G, -2)
-            v = v.repeat_interleave(self.G, -2)
+            k = k.repeat_interleave(self.G, dim=-2)
+            v = v.repeat_interleave(self.G, dim=-2)
 
         # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
         q = q.transpose(-2, -3)
@@ -256,7 +256,7 @@ class MixtureOfExperts(Module):
         self.topk = topk
 
         self.gate = Project(d_model, num_experts)
-        self.softmax: Callable[..., Tensor] = nn.Softmax(-1)
+        self.softmax: Callable[..., Tensor] = nn.Softmax(dim=-1)
         expert = FeedForward(d_model, d_ff)
         self.experts = nn.ModuleList(deepcopy(expert) for _ in range(num_experts))
 
