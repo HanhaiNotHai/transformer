@@ -6,7 +6,17 @@ from torch import Tensor, nn
 from torch.nn.functional import scaled_dot_product_attention
 
 from config import Config
-from util import Singleton
+
+
+def Singleton(cls):
+    instance = dict()
+
+    def singleton(*args, **kwargs):
+        if cls not in instance:
+            instance[cls] = cls(*args, **kwargs)
+        return instance[cls]
+
+    return singleton
 
 
 class Module(nn.Module):

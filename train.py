@@ -1,8 +1,3 @@
-import heapq
-import os
-from itertools import batched
-from time import strftime
-
 import evaluate
 import torch
 import wandb
@@ -12,48 +7,7 @@ from tqdm import tqdm, trange
 from config import Config
 from tokenizer.tokenizer import Tokenizer
 from transformer import Transformer
-from util import DataLoader, TestDataloader
-
-
-class TrainDataloader(DataLoader):
-
-    def __init__(self, config: Config, tokenizer: Tokenizer) -> None:
-        self.batch_size = config.batch_size
-        self.tokenizer = tokenizer
-        self.train_x_dataset = self.read(config.train_src)
-        self.train_y_dataset = self.read(config.train_tgt)
-        print('Done.')
-
-        assert len(self.train_x_dataset) == len(
-            self.train_y_dataset
-        ), 'x and y of train dataset should have the same length.'
-        self.len = len(self.train_x_dataset)
-
-        self.train_x_dataset = list(
-            map(lambda x: tuple(map(lambda y: y.to(config.device), x)), self.train_x_dataset)
-        )
-        self.train_y_dataset = list(
-            map(lambda x: tuple(map(lambda y: y.to(config.device), x)), self.train_y_dataset)
-        )
-
-    def read(self, file: str) -> list[Tensor]:
-        encoded_file = file + f'.encoded{self.batch_size}'
-        if os.path.exists(encoded_file):
-            print(f'Loading {encoded_file} ...')
-            return torch.load(encoded_file, weights_only=True)
-
-        print(f'Reading {file} ...')
-        with open(file) as f:
-            text_dataset = f.read().splitlines()[::-1]
-        text_batched_dataset = list(batched(text_dataset, self.batch_size))
-        print(f'Encoding {file} ...')
-        tensor_dataset = list(map(self.tokenizer.encode_batch, tqdm(text_batched_dataset)))
-        print(f'Saving {encoded_file} ...')
-        torch.save(tensor_dataset, encoded_file)
-        return tensor_dataset
-
-    def __getitem__(self, index) -> tuple[Tensor, ...]:
-        return *self.train_x_dataset[index], *self.train_y_dataset[index]
+from util import Saver, TestDataloader, TrainDataloader
 
 
 class Scheduler(torch.optim.lr_scheduler.LRScheduler):
@@ -69,48 +23,6 @@ class Scheduler(torch.optim.lr_scheduler.LRScheduler):
     def get_lr(self) -> list[float]:
         lr = self.scaling * min(self._step_count**-0.5, self._step_count * self.warmup_steps_)
         return [lr] * len(self.optimizer.param_groups)
-
-
-class Saver:
-
-    def __init__(self, transformer: Transformer, n_best_models: int | None = None) -> None:
-        self.transformer = transformer
-        self.save_dir = 'checkpoint/' + strftime('%m%d_%X/')
-
-        if n_best_models is None:
-            self.save = self.save0
-        else:
-            self.save = self.save1
-            # (score, -step, save_path)
-            self.best_models: list[tuple[float, int, str]] = []
-            self.n_best_models = n_best_models
-
-    def save0(self, score: float, epoch: int, step: int) -> None:
-        '''save all checkpoints'''
-
-        os.makedirs(self.save_dir, exist_ok=True)
-        save_path = self.save_dir + f'{score:.6f}_{epoch}_{step}.ckpt'
-        torch.save(self.transformer.state_dict(), save_path)
-
-    def save1(self, score: float, epoch: int, step: int) -> None:
-        '''len(self.best_models) < self.n_best_models'''
-
-        os.makedirs(self.save_dir, exist_ok=True)
-        save_path = self.save_dir + f'{score:.6f}_{epoch}_{step}.ckpt'
-        heapq.heappush(self.best_models, (score, -step, save_path))
-        torch.save(self.transformer.state_dict(), save_path)
-
-        if len(self.best_models) >= self.n_best_models:
-            self.save = self.save2
-
-    def save2(self, score: float, epoch: int, step: int) -> None:
-        '''len(self.best_models) >= self.n_best_models'''
-
-        save_path = self.save_dir + f'{score:.6f}_{epoch}_{step}.ckpt'
-        pop_save_path = heapq.heappushpop(self.best_models, (score, -step, save_path))[-1]
-        if pop_save_path != save_path:
-            os.remove(pop_save_path)
-            torch.save(self.transformer.state_dict(), save_path)
 
 
 def main() -> None:
