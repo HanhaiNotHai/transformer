@@ -504,7 +504,7 @@ class Transformer(Module):
         x_mask.unsqueeze_(1).unsqueeze_(1)
         # WHY: (subsequent_mask & y_mask) is faster than (y_mask & subsequent_mask).
         # [l - 1, l - 1] & [b, 1, l - 1] -> [b, l - 1, l - 1]
-        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze_(1)
+        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze(1)
         # [b, l - 1, l - 1] -> [b, 1, l - 1, l - 1]
         y_mask.unsqueeze_(1)
 
