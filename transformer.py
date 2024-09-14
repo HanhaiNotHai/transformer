@@ -1,14 +1,29 @@
 from copy import deepcopy
+from typing import Callable
 
 import torch
 from torch import Tensor, nn
 from torch.nn.functional import scaled_dot_product_attention
 
 from config import Config
-from util import Singleton
 
 
-class Project(nn.Linear):
+def Singleton(cls):
+    instance = dict()
+
+    def singleton(*args, **kwargs):
+        if cls not in instance:
+            instance[cls] = cls(*args, **kwargs)
+        return instance[cls]
+
+    return singleton
+
+
+class Module(nn.Module):
+    __call__: Callable[..., Tensor]
+
+
+class Project(nn.Linear, Module):
 
     def __init__(
         self, in_features: int, out_features: int, bias: bool = False, device=None, dtype=None
@@ -16,20 +31,20 @@ class Project(nn.Linear):
         super().__init__(in_features, out_features, bias, device, dtype)
 
 
-class RMSNorm(torch.nn.Module):
+class RMSNorm(Module):
 
     def __init__(self, d_model: int = 512, eps: float = 1e-8) -> None:
         super().__init__()
 
-        self.eps = eps
         self.weight = nn.Parameter(torch.ones(d_model))
+        self.eps = eps
 
     def forward(self, x: Tensor) -> Tensor:
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
 
 @Singleton
-class RotaryPositionEmbedding(nn.Module):
+class RotaryPositionEmbedding(Module):
 
     def __init__(
         self, d_head: int = 64, n_position: int = 100  # length of rotary position embedding
@@ -38,27 +53,23 @@ class RotaryPositionEmbedding(nn.Module):
 
         # [d_head // 2]
         theta = 1 / (10000 ** (torch.arange(0, d_head, 2) / d_head))
-        # [d_head]
-        theta = theta.repeat_interleave(2)
-        # [1, d_head]
-        theta.unsqueeze_(0)
-
         # [n_position]
         m = torch.arange(n_position, dtype=theta.dtype)
-        # [n_position, 1]
-        m.unsqueeze_(1)
 
-        # [n_position, d_head]
-        x = m @ theta
-        # [n_position, 1, d_head]
+        # [n_position, d_head // 2]
+        x = torch.outer(m, theta)
+        # [n_position, d_head // 2] -> [n_position, d_head]
+        x = x.repeat_interleave(2, dim=1)
+        # [n_position, d_head] -> [n_position, 1, d_head]
         x.unsqueeze_(1)
+
         cos = torch.cos(x)
         sin = torch.sin(x)
 
         self.cos: Tensor
         self.sin: Tensor
-        self.register_buffer('cos', cos, False)
-        self.register_buffer('sin', sin, False)
+        self.register_buffer('cos', cos, persistent=False)
+        self.register_buffer('sin', sin, persistent=False)
 
     def rotate_half(self, x: Tensor) -> Tensor:
         x1 = x[..., ::2]
@@ -68,7 +79,7 @@ class RotaryPositionEmbedding(nn.Module):
         x[..., 1::2] = x1
         return x
 
-    def forward(self, x: Tensor, i: int = None) -> Tensor:
+    def forward(self, x: Tensor, i: int | None = None) -> Tensor:
         if i is None:
             cos = self.cos[: x.shape[-3]]
             sin = self.sin[: x.shape[-3]]
@@ -78,7 +89,7 @@ class RotaryPositionEmbedding(nn.Module):
         return x * cos + self.rotate_half(x) * sin
 
 
-class MultiHeadAttention(nn.Module):
+class MultiHeadAttention(Module):
     '''encoder-decoder mha'''
 
     def __init__(
@@ -104,22 +115,24 @@ class MultiHeadAttention(nn.Module):
         self.rotary_position_embedding = RotaryPositionEmbedding(self.d_head, n_position)
         self.Wo = Project(d_model, d_model)
 
-    def forward(self, y: Tensor, x: Tensor, mask: Tensor = None, i: int = None) -> Tensor:
+    def forward(
+        self, y: Tensor, x: Tensor, mask: Tensor | None = None, i: int | None = None
+    ) -> Tensor:
         # [b, l, d_model] -> [b, l, h_q * d_head]
-        q: Tensor = self.Wq(y)
+        q = self.Wq(y)
         # [b, l, h_q * d_head] -> [b, l, h_q, d_head]
         q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
         q = self.rotary_position_embedding(q, i)
 
         if not i:
             # [b, l, d_model] -> [b, l, 2 * h_kv * d_head]
-            kv: Tensor = self.Wkv(x)
+            kv = self.Wkv(x)
             # [b, l, 2 * h_kv * d_head] -> [b, l, h_kv * d_head] * 2
-            k, v = kv.split([self.d_kv, self.d_kv], -1)
+            k, v = kv.split([self.d_kv, self.d_kv], dim=-1)
 
             # [b, l, h_kv * d_head] -> [b, l, h_kv, d_head]
-            k: Tensor = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
-            v: Tensor = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
+            k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
+            v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
 
             k = self.rotary_position_embedding(k)
 
@@ -131,8 +144,8 @@ class MultiHeadAttention(nn.Module):
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
-            k = k.repeat_interleave(self.G, -2)
-            v = v.repeat_interleave(self.G, -2)
+            k = k.repeat_interleave(self.G, dim=-2)
+            v = v.repeat_interleave(self.G, dim=-2)
 
         # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
         q = q.transpose(-2, -3)
@@ -149,7 +162,7 @@ class MultiHeadAttention(nn.Module):
         return x
 
 
-class MultiHeadSelfAttention(nn.Module):
+class MultiHeadSelfAttention(Module):
     '''encoder and decoder self_mha'''
 
     def __init__(
@@ -160,6 +173,7 @@ class MultiHeadSelfAttention(nn.Module):
         n_position: int = 100,  # length of rotary position embedding
         dropout: float = 0.1,
         kv_cache: bool = False,
+        inference_batch_size: int = 1,
     ) -> None:
         super().__init__()
 
@@ -177,39 +191,39 @@ class MultiHeadSelfAttention(nn.Module):
         self.Wo = Project(d_model, d_model)
 
         if kv_cache:
-            k_cache = torch.zeros(n_position, h_kv, self.d_head)
-            v_cache = torch.zeros(n_position, h_kv, self.d_head)
+            k_cache = torch.empty(inference_batch_size, n_position, h_kv, self.d_head)
+            v_cache = torch.empty(inference_batch_size, n_position, h_kv, self.d_head)
             self.k_cache: Tensor
             self.v_cache: Tensor
-            self.register_buffer('k_cache', k_cache, False)
-            self.register_buffer('v_cache', v_cache, False)
+            self.register_buffer('k_cache', k_cache, persistent=False)
+            self.register_buffer('v_cache', v_cache, persistent=False)
 
     def forward(
-        self, x: Tensor, mask: Tensor = None, i: int = None, kv_cache: bool = False
+        self, x: Tensor, mask: Tensor | None = None, i: int | None = None, kv_cache: bool = False
     ) -> Tensor:
         # [b, l, d_model] -> [b, l, (h_q + 2 * h_kv) * d_head]
-        qkv: Tensor = self.Wqkv(x)
+        qkv = self.Wqkv(x)
         # [b, l, (h_q + 2 * h_kv) * self.d_head] -> [b, l, {h_q, h_kv, h_kv} * d_head]
-        q, k, v = qkv.split([self.d_q, self.d_kv, self.d_kv], -1)
+        q, k, v = qkv.split([self.d_q, self.d_kv, self.d_kv], dim=-1)
 
         # [b, l, h * d_head] -> [b, l, h, d_head]
-        q: Tensor = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
-        k: Tensor = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
-        v: Tensor = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
+        q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
+        k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
+        v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
 
         q = self.rotary_position_embedding(q, i)
         k = self.rotary_position_embedding(k, i)
 
         if kv_cache:
-            self.k_cache[i] = k[0]
-            self.v_cache[i] = v[0]
-            k = self.k_cache[: i + 1]
-            v = self.v_cache[: i + 1]
+            self.k_cache[:, i] = k[:, 0]
+            self.v_cache[:, i] = v[:, 0]
+            k = self.k_cache[:, : i + 1]
+            v = self.v_cache[:, : i + 1]
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
-            k = k.repeat_interleave(self.G, -2)
-            v = v.repeat_interleave(self.G, -2)
+            k = k.repeat_interleave(self.G, dim=-2)
+            v = v.repeat_interleave(self.G, dim=-2)
 
         # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
         q = q.transpose(-2, -3)
@@ -226,7 +240,7 @@ class MultiHeadSelfAttention(nn.Module):
         return x
 
 
-class FeedForward(nn.Module):
+class FeedForward(Module):
     '''SwiGLU'''
 
     def __init__(self, d_model: int = 512, d_ff: int = 2048) -> None:
@@ -242,7 +256,7 @@ class FeedForward(nn.Module):
         return self.W2(self.silu(self.W(x)) * self.V(x))
 
 
-class MixtureOfExperts(nn.Module):
+class MixtureOfExperts(Module):
 
     def __init__(
         self, d_model: int = 512, d_ff: int = 2048, num_experts: int = 8, topk: int = 2
@@ -252,7 +266,7 @@ class MixtureOfExperts(nn.Module):
         self.topk = topk
 
         self.gate = Project(d_model, num_experts)
-        self.softmax = nn.Softmax(-1)
+        self.softmax: Callable[..., Tensor] = nn.Softmax(dim=-1)
         expert = FeedForward(d_model, d_ff)
         self.experts = nn.ModuleList(deepcopy(expert) for _ in range(num_experts))
 
@@ -262,7 +276,7 @@ class MixtureOfExperts(nn.Module):
         # [b, l, topk]
         weights, selected_experts = torch.topk(gate_logits, self.topk)
 
-        weights: Tensor = self.softmax(weights)
+        weights = self.softmax(weights)
         # [b, l, topk, 1] for weight * expert
         weights = weights.unsqueeze(-1)
 
@@ -273,7 +287,7 @@ class MixtureOfExperts(nn.Module):
         return y
 
 
-class EncoderLayer(nn.Module):
+class EncoderLayer(Module):
 
     def __init__(
         self,
@@ -294,7 +308,7 @@ class EncoderLayer(nn.Module):
         self.ffn = MixtureOfExperts(d_model, d_ff, num_experts, topk)
         self.ffn_norm = RMSNorm(d_model)
 
-    def forward(self, x: Tensor, x_mask: Tensor = None) -> Tensor:
+    def forward(self, x: Tensor, x_mask: Tensor | None = None) -> Tensor:
         residual = x
         x = self.self_mha(x, x_mask)
         x += residual
@@ -308,7 +322,7 @@ class EncoderLayer(nn.Module):
         return x
 
 
-class Encoder(nn.Module):
+class Encoder(Module):
 
     def __init__(
         self,
@@ -329,13 +343,13 @@ class Encoder(nn.Module):
         )
         self.layers = nn.ModuleList(deepcopy(encoder_layer) for _ in range(N))
 
-    def forward(self, x: Tensor, x_mask: Tensor = None) -> Tensor:
+    def forward(self, x: Tensor, x_mask: Tensor | None = None) -> Tensor:
         for layer in self.layers:
             x = layer(x, x_mask)
         return x
 
 
-class DecoderLayer(nn.Module):
+class DecoderLayer(Module):
 
     def __init__(
         self,
@@ -365,9 +379,9 @@ class DecoderLayer(nn.Module):
         self,
         y: Tensor,
         x: Tensor,
-        y_mask: Tensor = None,
-        x_mask: Tensor = None,
-        i: int = None,
+        y_mask: Tensor | None = None,
+        x_mask: Tensor | None = None,
+        i: int | None = None,
         kv_cache: bool = False,
     ) -> Tensor:
         '''
@@ -393,7 +407,7 @@ class DecoderLayer(nn.Module):
         return y
 
 
-class Decoder(nn.Module):
+class Decoder(Module):
 
     def __init__(
         self,
@@ -418,9 +432,9 @@ class Decoder(nn.Module):
         self,
         y: Tensor,
         x: Tensor,
-        y_mask: Tensor = None,
-        x_mask: Tensor = None,
-        i: int = None,
+        y_mask: Tensor | None = None,
+        x_mask: Tensor | None = None,
+        i: int | None = None,
         kv_cache: bool = False,
     ) -> Tensor:
         '''
@@ -433,7 +447,7 @@ class Decoder(nn.Module):
         return y
 
 
-class Transformer(nn.Module):
+class Transformer(Module):
 
     def __init__(
         self,
@@ -448,23 +462,20 @@ class Transformer(nn.Module):
         num_experts: int = 8,
         topk: int = 2,
         N: int = 6,  # num of encoder,decoder layers
-        ckpt_path: str = None,
+        ckpt_path: str | None = None,
     ) -> None:
         super().__init__()
 
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.encoder = Encoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
-        self.decoder = Decoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
-        self.linear = nn.Linear(d_model, vocab_size)
-
         # share the same weight matrix between the two embedding layers
         # and the pre-softmax linear transformation
-        self.linear.weight = self.embedding.weight
+        self.embedding = nn.Embedding(vocab_size, d_model, config.pad_id)
+        self.encoder = Encoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
+        self.decoder = Decoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
 
         # Prevent leftward information flow in the decoder.
         subsequent_mask = torch.ones([config.n_position, config.n_position]).bool().tril()
         self.subsequent_mask: Tensor
-        self.register_buffer('subsequent_mask', subsequent_mask, False)
+        self.register_buffer('subsequent_mask', subsequent_mask, persistent=False)
 
         self.to(config.device)
 
@@ -473,7 +484,7 @@ class Transformer(nn.Module):
             self.eval()
             # load_state_dict() is faster when on the same device as nn.Module.
             # WHY: load_state_dict() is faster after eval().
-            self.load_state_dict(torch.load(ckpt_path, config.device))
+            self.load_state_dict(torch.load(ckpt_path, config.device, weights_only=True))
         else:
             # WHY: iterating parameters() is faster on cuda.
             for p in self.parameters():
@@ -493,7 +504,7 @@ class Transformer(nn.Module):
         x_mask.unsqueeze_(1).unsqueeze_(1)
         # WHY: (subsequent_mask & y_mask) is faster than (y_mask & subsequent_mask).
         # [l - 1, l - 1] & [b, 1, l - 1] -> [b, l - 1, l - 1]
-        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze(1)
+        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze_(1)
         # [b, l - 1, l - 1] -> [b, 1, l - 1, l - 1]
         y_mask.unsqueeze_(1)
 
@@ -501,7 +512,7 @@ class Transformer(nn.Module):
         y = self.embedding(y)
         x = self.encoder(x, x_mask)
         y = self.decoder(y, x, y_mask, x_mask)
-        y = self.linear(y)
+        y = y @ self.embedding.weight.T
         return y
 
     def save(self, ckpt_path: str) -> None:
@@ -513,17 +524,17 @@ class Transformer(nn.Module):
         x = self.encoder(x)
 
         seq_len = min(x.shape[1] + 50, self.max_len)
-        y = torch.empty([seq_len], dtype=torch.long, device=self.device)
-        y[0] = self.bos_id
+        y = torch.empty([1, seq_len], dtype=torch.long, device=self.device)
+        y[0, 0] = self.bos_id
 
-        for i in range(y.shape[0] - 1):
-            y_emb = self.embedding(y[i : i + 1])
+        for i in range(y.shape[1] - 1):
+            y_emb = self.embedding(y[:, i : i + 1])
             dec_out = self.decoder(y_emb, x, i=i, kv_cache=True)
-            logits: Tensor = self.linear(dec_out)
+            logits = dec_out @ self.embedding.weight.T
 
-            y[i + 1] = logits.argmax()
-            if y[i + 1] == self.eos_id:
+            y[0, i + 1] = logits.argmax()
+            if y[0, i + 1] == self.eos_id:
                 # Remove BOS and EOS ids.
-                return y[1 : i + 1]
+                return y[0, 1 : i + 1]
         # Remove BOS id.
-        return y[1:]
+        return y[0, 1:]

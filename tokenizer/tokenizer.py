@@ -8,7 +8,7 @@ from config import Config
 
 class Tokenizer:
 
-    def __init__(self, config: Config, max_len: int = None) -> None:
+    def __init__(self, config: Config, max_len: int | None = None) -> None:
         '''
         Encoding process is as follows.
         encode -> truncate -> post process -> pad
@@ -38,7 +38,7 @@ class Tokenizer:
         tokenizer.train(
             [Config.train_src, Config.train_tgt],
             vocab_size=Config.vocab_size,
-            special_tokens=Config.special_tokens,
+            special_tokens=list(Config.special_tokens),
         )
         tokenizer.save_model(Config.tokenizer_dir)
 
@@ -50,7 +50,7 @@ class Tokenizer:
 
     def encode(self, sequence: str) -> Tensor:
         encoding = self.tokenizer.encode(sequence)
-        tokens = torch.tensor(encoding.ids)
+        tokens = torch.tensor(encoding.ids).unsqueeze_(0)
         return tokens
 
     def decode(self, y_hat: Tensor) -> str:

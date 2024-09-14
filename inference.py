@@ -2,6 +2,7 @@ import os
 from time import strftime
 
 import evaluate
+from torch import Tensor
 from tqdm import tqdm
 
 from config import Config
@@ -20,7 +21,6 @@ def main() -> None:
     result = ['source\ttarget\tpred\tBLEU']
 
     for x, src, tgt in tqdm(test_dataloader):
-        x = x.to(transformer.device)
         y_hat = transformer.inference(x)
         pred = tokenizer.decode(y_hat)
 
