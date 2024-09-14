@@ -72,7 +72,7 @@ class Config:
             os.environ['http_proxy'] = os.environ['https_proxy'] = self.proxy
 
         if self.use_gpu:
-            if torch.mps.is_available():
+            if torch.backends.mps.is_available():
                 self.device = torch.device('mps')
                 print('Using MPS.')
             elif torch.cuda.is_available():
