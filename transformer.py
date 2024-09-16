@@ -31,18 +31,6 @@ class Project(nn.Linear, Module):
         super().__init__(in_features, out_features, bias, device, dtype)
 
 
-class RMSNorm(Module):
-
-    def __init__(self, d_model: int = 512, eps: float = 1e-8) -> None:
-        super().__init__()
-
-        self.weight = nn.Parameter(torch.ones(d_model))
-        self.eps = eps
-
-    def forward(self, x: Tensor) -> Tensor:
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
-
-
 @Singleton
 class RotaryPositionEmbedding(Module):
 
@@ -303,10 +291,10 @@ class EncoderLayer(Module):
         super().__init__()
 
         self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, n_position, dropout)
-        self.mha_norm = RMSNorm(d_model)
+        self.mha_norm = nn.RMSNorm(d_model)
 
         self.ffn = MixtureOfExperts(d_model, d_ff, num_experts, topk)
-        self.ffn_norm = RMSNorm(d_model)
+        self.ffn_norm = nn.RMSNorm(d_model)
 
     def forward(self, x: Tensor, x_mask: Tensor | None = None) -> Tensor:
         residual = x
@@ -367,13 +355,13 @@ class DecoderLayer(Module):
         self.self_mha = MultiHeadSelfAttention(
             d_model, h_q, h_kv, n_position, dropout, kv_cache=True
         )
-        self.self_mha_norm = RMSNorm(d_model)
+        self.self_mha_norm = nn.RMSNorm(d_model)
 
         self.mha = MultiHeadAttention(d_model, h_q, h_kv, n_position, dropout)
-        self.mha_norm = RMSNorm(d_model)
+        self.mha_norm = nn.RMSNorm(d_model)
 
         self.ffn = MixtureOfExperts(d_model, d_ff, num_experts, topk)
-        self.ffn_norm = RMSNorm(d_model)
+        self.ffn_norm = nn.RMSNorm(d_model)
 
     def forward(
         self,

@@ -18,6 +18,18 @@ class Project(nn.Linear, Module):
         super().__init__(in_features, out_features, bias, device, dtype)
 
 
+class RMSNorm(Module):
+
+    def __init__(self, d_model: int = 512, eps: float = 1e-8) -> None:
+        super().__init__()
+
+        self.weight = nn.Parameter(torch.ones(d_model))
+        self.eps = eps
+
+    def forward(self, x: Tensor) -> Tensor:
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
+
+
 class PositionalEncoding(Module):
 
     def __init__(self, d_model: int = 512, n_position: int = 100):
