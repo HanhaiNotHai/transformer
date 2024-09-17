@@ -513,7 +513,7 @@ class Transformer(Module):
         x = self.encoder(x)
 
         seq_len = min(x.shape[1] + 50, self.max_len)
-        y = torch.empty([1, seq_len], dtype=torch.long, device=self.device)
+        y = torch.empty([1, seq_len], dtype=torch.long).to(self.device)
         y[0, 0] = self.bos_id
 
         for i in range(seq_len - 1):
@@ -535,7 +535,7 @@ class Transformer(Module):
 
         seq_len = min(x.shape[1] + 50, self.max_len)
         # (score, EOSidx, -log_prob, y)  EOSidx==0 means EOS is not found.
-        beams = [(0, 0, 0, torch.empty([1, seq_len], dtype=torch.long, device=self.device))]
+        beams = [(0, 0, 0, torch.empty([1, seq_len], dtype=torch.long).to(self.device))]
         for *_, y in beams:
             y[0, 0] = self.bos_id
 
