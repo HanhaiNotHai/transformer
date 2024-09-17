@@ -2,7 +2,6 @@ import os
 from time import strftime
 
 import evaluate
-from torch import Tensor
 from tqdm import tqdm
 
 from config import Config

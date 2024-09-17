@@ -110,18 +110,18 @@ class MultiHeadAttention(Module):
         # [b, l, d_model] -> [b, l, h_q * d_head]
         q = self.Wq(y)
         # [b, l, h_q * d_head] -> [b, l, h_q, d_head]
-        q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
+        q = q.reshape(*q.shape[:2], self.h_q, self.d_head)
         q = self.rotary_position_embedding(q, i)
 
         if not i:
             # [b, l, d_model] -> [b, l, 2 * h_kv * d_head]
             kv = self.Wkv(x)
             # [b, l, 2 * h_kv * d_head] -> [b, l, h_kv * d_head] * 2
-            k, v = kv.split([self.d_kv, self.d_kv], dim=-1)
+            k, v = kv.split([self.d_kv, self.d_kv], dim=2)
 
             # [b, l, h_kv * d_head] -> [b, l, h_kv, d_head]
-            k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
-            v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
+            k = k.reshape(*k.shape[:2], self.h_kv, self.d_head)
+            v = v.reshape(*v.shape[:2], self.h_kv, self.d_head)
 
             k = self.rotary_position_embedding(k)
 
@@ -133,19 +133,19 @@ class MultiHeadAttention(Module):
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
-            k = k.repeat_interleave(self.G, dim=-2)
-            v = v.repeat_interleave(self.G, dim=-2)
+            k = k.repeat_interleave(self.G, dim=2)
+            v = v.repeat_interleave(self.G, dim=2)
 
         # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
-        q = q.transpose(-2, -3)
-        k = k.transpose(-2, -3)
-        v = v.transpose(-2, -3)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
         x = scaled_dot_product_attention(q, k, v, mask, self.dropout if self.training else 0)
         # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
-        x = x.transpose(-2, -3)
+        x = x.transpose(1, 2)
         # [b, l, h_q, d_head] -> [b, l, d_model]
-        x = x.reshape(*x.shape[:-2], self.d_model)
+        x = x.reshape(*x.shape[:2], self.d_model)
         x = self.Wo(x)
 
         return x
@@ -193,12 +193,12 @@ class MultiHeadSelfAttention(Module):
         # [b, l, d_model] -> [b, l, (h_q + 2 * h_kv) * d_head]
         qkv = self.Wqkv(x)
         # [b, l, (h_q + 2 * h_kv) * self.d_head] -> [b, l, {h_q, h_kv, h_kv} * d_head]
-        q, k, v = qkv.split([self.d_q, self.d_kv, self.d_kv], dim=-1)
+        q, k, v = qkv.split([self.d_q, self.d_kv, self.d_kv], dim=2)
 
         # [b, l, h * d_head] -> [b, l, h, d_head]
-        q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
-        k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
-        v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
+        q = q.reshape(*q.shape[:2], self.h_q, self.d_head)
+        k = k.reshape(*k.shape[:2], self.h_kv, self.d_head)
+        v = v.reshape(*v.shape[:2], self.h_kv, self.d_head)
 
         q = self.rotary_position_embedding(q, i)
         k = self.rotary_position_embedding(k, i)
@@ -211,19 +211,19 @@ class MultiHeadSelfAttention(Module):
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
-            k = k.repeat_interleave(self.G, dim=-2)
-            v = v.repeat_interleave(self.G, dim=-2)
+            k = k.repeat_interleave(self.G, dim=2)
+            v = v.repeat_interleave(self.G, dim=2)
 
         # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
-        q = q.transpose(-2, -3)
-        k = k.transpose(-2, -3)
-        v = v.transpose(-2, -3)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
         x = scaled_dot_product_attention(q, k, v, mask, self.dropout if self.training else 0)
         # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
-        x = x.transpose(-2, -3)
+        x = x.transpose(1, 2)
         # [b, l, h_q, d_head] -> [b, l, d_model]
-        x = x.reshape(*x.shape[:-2], self.d_model)
+        x = x.reshape(*x.shape[:2], self.d_model)
         x = self.Wo(x)
 
         return x
@@ -490,10 +490,10 @@ class Transformer(Module):
 
     def forward(self, x: Tensor, y: Tensor, x_mask: Tensor, y_mask: Tensor) -> Tensor:
         # [b, l] -> [b, 1, 1, l]
-        x_mask.unsqueeze_(1).unsqueeze_(1)
+        x_mask.unsqueeze_(dim=1).unsqueeze_(dim=1)
         # WHY: (subsequent_mask & y_mask) is faster than (y_mask & subsequent_mask).
         # [l - 1, l - 1] & [b, 1, l - 1] -> [b, l - 1, l - 1]
-        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze(1)
+        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze(dim=1)
         # [b, l - 1, l - 1] -> [b, 1, l - 1, l - 1]
         y_mask.unsqueeze_(1)
 
@@ -549,11 +549,12 @@ class Transformer(Module):
                 y_emb = self.embedding(y[:, i : i + 1])
                 dec_out = self.decoder(y_emb, x, i=i, kv_cache=True)
                 logits = dec_out @ self.embedding.weight.T
+
                 logits.squeeze_()
                 log_probs = logits.log_softmax(-1)
                 indecies = log_probs.argsort(descending=True)[: self.beam_size]
                 for index in indecies:
-                    new_log_prob = log_prob + log_probs[index]
+                    new_log_prob = log_prob + log_probs[index].item()
                     new_score = new_log_prob / (i + 1) ** self.length_penalty
                     new_EOSidx = i + 1 if index == self.eos_id else 0
                     new_y = y.clone()
