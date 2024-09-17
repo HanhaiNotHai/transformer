@@ -551,7 +551,7 @@ class Transformer(Module):
                 logits = dec_out @ self.embedding.weight.T
 
                 logits.squeeze_()
-                log_probs = logits.log_softmax(-1)
+                log_probs = logits.log_softmax(dim=-1)
                 indecies = log_probs.argsort(descending=True)[: self.beam_size]
                 for index in indecies:
                     new_log_prob = log_prob + log_probs[index].item()
@@ -568,6 +568,7 @@ class Transformer(Module):
             if all(EOSidx for _, EOSidx, *_ in beams):
                 break
 
-        _, EOSidx, _, y = beams[0]
+        beams.sort()
+        _, EOSidx, _, y = beams[-1]
         # Remove BOS and EOS ids.
         return y[0, 1:EOSidx] if EOSidx else y[0, 1:]
