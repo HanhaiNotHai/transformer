@@ -1,3 +1,4 @@
+import heapq
 from copy import deepcopy
 from typing import Callable
 
@@ -507,7 +508,7 @@ class Transformer(Module):
         torch.save(self.state_dict(), ckpt_path)
 
     @torch.inference_mode()
-    def inference(self, x: Tensor) -> tuple[Tensor, Tensor]:
+    def inference(self, x: Tensor) -> Tensor:
         x = self.embedding(x)
         x = self.encoder(x)
 
@@ -515,7 +516,7 @@ class Transformer(Module):
         y = torch.empty([1, seq_len], dtype=torch.long, device=self.device)
         y[0, 0] = self.bos_id
 
-        for i in range(y.shape[1] - 1):
+        for i in range(seq_len - 1):
             y_emb = self.embedding(y[:, i : i + 1])
             dec_out = self.decoder(y_emb, x, i=i, kv_cache=True)
             logits = dec_out @ self.embedding.weight.T
@@ -526,3 +527,46 @@ class Transformer(Module):
                 return y[0, 1 : i + 1]
         # Remove BOS id.
         return y[0, 1:]
+
+    @torch.inference_mode()
+    def beam_search(self, x: Tensor) -> Tensor:
+        x = self.embedding(x)
+        x = self.encoder(x)
+
+        seq_len = min(x.shape[1] + 50, self.max_len)
+        # (score, EOSidx, -log_prob, y)  EOSidx==0 means EOS is not found.
+        beams = [(0, 0, 0, torch.empty([1, seq_len], dtype=torch.long, device=self.device))]
+        for *_, y in beams:
+            y[0, 0] = self.bos_id
+
+        for i in range(seq_len - 1):
+            new_beams = []
+            for score, EOSidx, log_prob, y in beams:
+                if EOSidx:
+                    heapq.heappush(new_beams, (score, EOSidx, log_prob, y))
+                    continue
+
+                y_emb = self.embedding(y[:, i : i + 1])
+                dec_out = self.decoder(y_emb, x, i=i, kv_cache=True)
+                logits = dec_out @ self.embedding.weight.T
+                logits.squeeze_()
+                log_probs = logits.log_softmax(-1)
+                indecies = log_probs.argsort(descending=True)[: self.beam_size]
+                for index in indecies:
+                    new_log_prob = log_prob + log_probs[index]
+                    new_score = new_log_prob / (i + 1) ** self.length_penalty
+                    new_EOSidx = i + 1 if index == self.eos_id else 0
+                    new_y = y.clone()
+                    new_y[0, i + 1] = index
+                    if len(new_beams) < self.beam_size:
+                        heapq.heappush(new_beams, (new_score, new_EOSidx, new_log_prob, new_y))
+                    else:
+                        heapq.heappushpop(new_beams, (new_score, new_EOSidx, new_log_prob, new_y))
+
+            beams = new_beams
+            if all(EOSidx for _, EOSidx, *_ in beams):
+                break
+
+        _, EOSidx, _, y = beams[0]
+        # Remove BOS and EOS ids.
+        return y[0, 1:EOSidx] if EOSidx else y[0, 1:]

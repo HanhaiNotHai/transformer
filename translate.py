@@ -15,7 +15,7 @@ def main() -> None:
         except EOFError:
             break
         x = tokenizer.encode(en).to(transformer.device)
-        y_hat = transformer.inference(x)
+        y_hat = transformer.beam_search(x)
         pred = tokenizer.decode(y_hat)
         print(f'German: {pred}\n')
 
