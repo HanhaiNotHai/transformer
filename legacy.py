@@ -18,6 +18,18 @@ class Project(nn.Linear, Module):
         super().__init__(in_features, out_features, bias, device, dtype)
 
 
+class RMSNorm(Module):
+
+    def __init__(self, d_model: int = 512, eps: float = 1e-8) -> None:
+        super().__init__()
+
+        self.weight = nn.Parameter(torch.ones(d_model))
+        self.eps = eps
+
+    def forward(self, x: Tensor) -> Tensor:
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps) * self.weight
+
+
 class PositionalEncoding(Module):
 
     def __init__(self, d_model: int = 512, n_position: int = 100):
@@ -76,7 +88,7 @@ class ScaledDotProductAttention(Module):
         super().__init__()
 
         self.scaling = 1 / sqrt(dk)
-        self.softmax = nn.Softmax(-1)
+        self.softmax = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor | None = None) -> Tensor:
@@ -117,7 +129,7 @@ class MultiHeadAttention(Module):
         # [b, l, dv] * h
         heads = [self.attention(q, k, v, mask) for q, k, v in zip(qs, ks, vs)]
         # [b, l, dv*h=d_model]
-        concat = torch.cat(heads, -1)
+        concat = torch.cat(heads, dim=-1)
         x = self.Wo(concat)
 
         return x

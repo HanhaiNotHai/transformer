@@ -79,7 +79,7 @@ def main() -> None:
                 if step % config.eval_save_per_steps == 0:
                     transformer.eval()
                     for x, _, tgt in tqdm(test_dataloader, 'test', leave=False):
-                        y_hat = transformer.inference(x)
+                        y_hat = transformer.beam_search(x)
                         pred = tokenizer.decode(y_hat)
                         bleu.add_batch(predictions=[pred], references=[tgt])
                     transformer.train()

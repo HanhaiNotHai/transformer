@@ -1,3 +1,4 @@
+import heapq
 from copy import deepcopy
 from typing import Callable
 
@@ -29,18 +30,6 @@ class Project(nn.Linear, Module):
         self, in_features: int, out_features: int, bias: bool = False, device=None, dtype=None
     ) -> None:
         super().__init__(in_features, out_features, bias, device, dtype)
-
-
-class RMSNorm(Module):
-
-    def __init__(self, d_model: int = 512, eps: float = 1e-8) -> None:
-        super().__init__()
-
-        self.weight = nn.Parameter(torch.ones(d_model))
-        self.eps = eps
-
-    def forward(self, x: Tensor) -> Tensor:
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
 
 @Singleton
@@ -121,18 +110,18 @@ class MultiHeadAttention(Module):
         # [b, l, d_model] -> [b, l, h_q * d_head]
         q = self.Wq(y)
         # [b, l, h_q * d_head] -> [b, l, h_q, d_head]
-        q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
+        q = q.reshape(*q.shape[:2], self.h_q, self.d_head)
         q = self.rotary_position_embedding(q, i)
 
         if not i:
             # [b, l, d_model] -> [b, l, 2 * h_kv * d_head]
             kv = self.Wkv(x)
             # [b, l, 2 * h_kv * d_head] -> [b, l, h_kv * d_head] * 2
-            k, v = kv.split([self.d_kv, self.d_kv], dim=-1)
+            k, v = kv.split([self.d_kv, self.d_kv], dim=2)
 
             # [b, l, h_kv * d_head] -> [b, l, h_kv, d_head]
-            k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
-            v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
+            k = k.reshape(*k.shape[:2], self.h_kv, self.d_head)
+            v = v.reshape(*v.shape[:2], self.h_kv, self.d_head)
 
             k = self.rotary_position_embedding(k)
 
@@ -144,19 +133,19 @@ class MultiHeadAttention(Module):
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
-            k = k.repeat_interleave(self.G, dim=-2)
-            v = v.repeat_interleave(self.G, dim=-2)
+            k = k.repeat_interleave(self.G, dim=2)
+            v = v.repeat_interleave(self.G, dim=2)
 
         # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
-        q = q.transpose(-2, -3)
-        k = k.transpose(-2, -3)
-        v = v.transpose(-2, -3)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
         x = scaled_dot_product_attention(q, k, v, mask, self.dropout if self.training else 0)
         # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
-        x = x.transpose(-2, -3)
+        x = x.transpose(1, 2)
         # [b, l, h_q, d_head] -> [b, l, d_model]
-        x = x.reshape(*x.shape[:-2], self.d_model)
+        x = x.reshape(*x.shape[:2], self.d_model)
         x = self.Wo(x)
 
         return x
@@ -204,12 +193,12 @@ class MultiHeadSelfAttention(Module):
         # [b, l, d_model] -> [b, l, (h_q + 2 * h_kv) * d_head]
         qkv = self.Wqkv(x)
         # [b, l, (h_q + 2 * h_kv) * self.d_head] -> [b, l, {h_q, h_kv, h_kv} * d_head]
-        q, k, v = qkv.split([self.d_q, self.d_kv, self.d_kv], dim=-1)
+        q, k, v = qkv.split([self.d_q, self.d_kv, self.d_kv], dim=2)
 
         # [b, l, h * d_head] -> [b, l, h, d_head]
-        q = q.reshape(*q.shape[:-1], self.h_q, self.d_head)
-        k = k.reshape(*k.shape[:-1], self.h_kv, self.d_head)
-        v = v.reshape(*v.shape[:-1], self.h_kv, self.d_head)
+        q = q.reshape(*q.shape[:2], self.h_q, self.d_head)
+        k = k.reshape(*k.shape[:2], self.h_kv, self.d_head)
+        v = v.reshape(*v.shape[:2], self.h_kv, self.d_head)
 
         q = self.rotary_position_embedding(q, i)
         k = self.rotary_position_embedding(k, i)
@@ -222,19 +211,19 @@ class MultiHeadSelfAttention(Module):
 
         if self.G > 1:
             # [b, l, h_kv, d_head] -> [b, l, h_q, d_head]
-            k = k.repeat_interleave(self.G, dim=-2)
-            v = v.repeat_interleave(self.G, dim=-2)
+            k = k.repeat_interleave(self.G, dim=2)
+            v = v.repeat_interleave(self.G, dim=2)
 
         # [b, l, h_q, d_head] -> [b, h_q, l, d_head]
-        q = q.transpose(-2, -3)
-        k = k.transpose(-2, -3)
-        v = v.transpose(-2, -3)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
         x = scaled_dot_product_attention(q, k, v, mask, self.dropout if self.training else 0)
         # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
-        x = x.transpose(-2, -3)
+        x = x.transpose(1, 2)
         # [b, l, h_q, d_head] -> [b, l, d_model]
-        x = x.reshape(*x.shape[:-2], self.d_model)
+        x = x.reshape(*x.shape[:2], self.d_model)
         x = self.Wo(x)
 
         return x
@@ -303,10 +292,10 @@ class EncoderLayer(Module):
         super().__init__()
 
         self.self_mha = MultiHeadSelfAttention(d_model, h_q, h_kv, n_position, dropout)
-        self.mha_norm = RMSNorm(d_model)
+        self.mha_norm = nn.RMSNorm(d_model)
 
         self.ffn = MixtureOfExperts(d_model, d_ff, num_experts, topk)
-        self.ffn_norm = RMSNorm(d_model)
+        self.ffn_norm = nn.RMSNorm(d_model)
 
     def forward(self, x: Tensor, x_mask: Tensor | None = None) -> Tensor:
         residual = x
@@ -367,13 +356,13 @@ class DecoderLayer(Module):
         self.self_mha = MultiHeadSelfAttention(
             d_model, h_q, h_kv, n_position, dropout, kv_cache=True
         )
-        self.self_mha_norm = RMSNorm(d_model)
+        self.self_mha_norm = nn.RMSNorm(d_model)
 
         self.mha = MultiHeadAttention(d_model, h_q, h_kv, n_position, dropout)
-        self.mha_norm = RMSNorm(d_model)
+        self.mha_norm = nn.RMSNorm(d_model)
 
         self.ffn = MixtureOfExperts(d_model, d_ff, num_experts, topk)
-        self.ffn_norm = RMSNorm(d_model)
+        self.ffn_norm = nn.RMSNorm(d_model)
 
     def forward(
         self,
@@ -501,10 +490,10 @@ class Transformer(Module):
 
     def forward(self, x: Tensor, y: Tensor, x_mask: Tensor, y_mask: Tensor) -> Tensor:
         # [b, l] -> [b, 1, 1, l]
-        x_mask.unsqueeze_(1).unsqueeze_(1)
+        x_mask.unsqueeze_(dim=1).unsqueeze_(dim=1)
         # WHY: (subsequent_mask & y_mask) is faster than (y_mask & subsequent_mask).
         # [l - 1, l - 1] & [b, 1, l - 1] -> [b, l - 1, l - 1]
-        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze_(1)
+        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze(dim=1)
         # [b, l - 1, l - 1] -> [b, 1, l - 1, l - 1]
         y_mask.unsqueeze_(1)
 
@@ -519,7 +508,7 @@ class Transformer(Module):
         torch.save(self.state_dict(), ckpt_path)
 
     @torch.inference_mode()
-    def inference(self, x: Tensor) -> tuple[Tensor, Tensor]:
+    def inference(self, x: Tensor) -> Tensor:
         x = self.embedding(x)
         x = self.encoder(x)
 
@@ -527,7 +516,7 @@ class Transformer(Module):
         y = torch.empty([1, seq_len], dtype=torch.long, device=self.device)
         y[0, 0] = self.bos_id
 
-        for i in range(y.shape[1] - 1):
+        for i in range(seq_len - 1):
             y_emb = self.embedding(y[:, i : i + 1])
             dec_out = self.decoder(y_emb, x, i=i, kv_cache=True)
             logits = dec_out @ self.embedding.weight.T
@@ -538,3 +527,47 @@ class Transformer(Module):
                 return y[0, 1 : i + 1]
         # Remove BOS id.
         return y[0, 1:]
+
+    @torch.inference_mode()
+    def beam_search(self, x: Tensor) -> Tensor:
+        x = self.embedding(x)
+        x = self.encoder(x)
+
+        seq_len = min(x.shape[1] + 50, self.max_len)
+        # (score, EOSidx, -log_prob, y)  EOSidx==0 means EOS is not found.
+        beams = [(0, 0, 0, torch.empty([1, seq_len], dtype=torch.long, device=self.device))]
+        for *_, y in beams:
+            y[0, 0] = self.bos_id
+
+        for i in range(seq_len - 1):
+            new_beams = []
+            for score, EOSidx, log_prob, y in beams:
+                if EOSidx:
+                    heapq.heappush(new_beams, (score, EOSidx, log_prob, y))
+                    continue
+
+                y_emb = self.embedding(y[:, i : i + 1])
+                dec_out = self.decoder(y_emb, x, i=i, kv_cache=True)
+                logits = dec_out @ self.embedding.weight.T
+
+                logits.squeeze_()
+                log_probs = logits.log_softmax(-1)
+                indecies = log_probs.argsort(descending=True)[: self.beam_size]
+                for index in indecies:
+                    new_log_prob = log_prob + log_probs[index].item()
+                    new_score = new_log_prob / (i + 1) ** self.length_penalty
+                    new_EOSidx = i + 1 if index == self.eos_id else 0
+                    new_y = y.clone()
+                    new_y[0, i + 1] = index
+                    if len(new_beams) < self.beam_size:
+                        heapq.heappush(new_beams, (new_score, new_EOSidx, new_log_prob, new_y))
+                    else:
+                        heapq.heappushpop(new_beams, (new_score, new_EOSidx, new_log_prob, new_y))
+
+            beams = new_beams
+            if all(EOSidx for _, EOSidx, *_ in beams):
+                break
+
+        _, EOSidx, _, y = beams[0]
+        # Remove BOS and EOS ids.
+        return y[0, 1:EOSidx] if EOSidx else y[0, 1:]

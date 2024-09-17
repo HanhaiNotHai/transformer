@@ -2,7 +2,6 @@ import os
 from time import strftime
 
 import evaluate
-from torch import Tensor
 from tqdm import tqdm
 
 from config import Config
@@ -21,7 +20,7 @@ def main() -> None:
     result = ['source\ttarget\tpred\tBLEU']
 
     for x, src, tgt in tqdm(test_dataloader):
-        y_hat = transformer.inference(x)
+        y_hat = transformer.beam_search(x)
         pred = tokenizer.decode(y_hat)
 
         score = bleu.compute(predictions=[pred], references=[tgt])['score']
