@@ -70,6 +70,37 @@ class TrainDataloader(DataLoader):
         return *self.train_x_dataset[index], *self.train_y_dataset[index]
 
 
+class TestBatchDataloader(DataLoader):
+
+    def __init__(self, config: Config, tokenizer: Tokenizer) -> None:
+        with open(config.test_src) as f:
+            test_src_dataset = f.read().splitlines()
+        test_src_batched_dataset = list(batched(test_src_dataset, config.batch_size))
+        self.test_x_dataset = list(map(tokenizer.encode_batch, test_src_batched_dataset))
+
+        with open(config.test_tgt) as f:
+            test_tgt_dataset = f.read().splitlines()
+        self.test_tgt_dataset = list(batched(test_tgt_dataset, config.batch_size))
+
+        assert len(self.test_x_dataset) == len(
+            self.test_tgt_dataset
+        ), 'src and tgt of test dataset should have the same length'
+        self.len = len(self.test_x_dataset)
+
+        self.test_x_dataset = list(
+            map(
+                lambda x: (
+                    x[0].to(config.device),
+                    x[1].unsqueeze_(1).unsqueeze_(1).to(config.device),
+                ),
+                self.test_x_dataset,
+            )
+        )
+
+    def __getitem__(self, index) -> tuple[Tensor, Tensor, tuple[str]]:
+        return *self.test_x_dataset[index], self.test_tgt_dataset[index]
+
+
 class TestDataloader(DataLoader):
 
     def __init__(self, config: Config, tokenizer: Tokenizer) -> None:

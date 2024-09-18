@@ -7,7 +7,7 @@ from tqdm import tqdm, trange
 from config import Config
 from tokenizer.tokenizer import Tokenizer
 from transformer import Transformer
-from util import Saver, TestDataloader, TrainDataloader
+from util import Saver, TestBatchDataloader, TrainDataloader
 
 
 class Scheduler(torch.optim.lr_scheduler.LRScheduler):
@@ -29,7 +29,7 @@ def main() -> None:
     config = Config()
     tokenizer = Tokenizer(config)
     train_dataloader = TrainDataloader(config, tokenizer)
-    test_dataloader = TestDataloader(config, tokenizer)
+    test_dataloader = TestBatchDataloader(config, tokenizer)
     transformer = Transformer(**config.model_config)
     bleu = evaluate.load('sacrebleu')
     saver = Saver(transformer, config.n_best_models)
@@ -78,10 +78,10 @@ def main() -> None:
 
                 if step % config.eval_save_per_steps == 0:
                     transformer.eval()
-                    for x, _, tgt in tqdm(test_dataloader, 'test', leave=False):
-                        y_hat = transformer.beam_search(x)
-                        pred = tokenizer.decode(y_hat)
-                        bleu.add_batch(predictions=[pred], references=[tgt])
+                    for x, x_mask, tgt in tqdm(test_dataloader, 'test', leave=False):
+                        y_hat = transformer.inference_batch(x, x_mask)
+                        pred = tokenizer.decode_batch(y_hat)
+                        bleu.add_batch(predictions=pred, references=tgt)
                     transformer.train()
 
                     score = bleu.compute()['score']

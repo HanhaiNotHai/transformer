@@ -61,6 +61,7 @@ class Config:
 
     # inference
     n_test: int = 128
+    inference_batch_size: int = 128
     beam_size: int = 4
     length_penalty: float = 0.6
 
@@ -99,6 +100,7 @@ class Config:
             num_experts=self.num_experts,
             topk=self.topk,
             N=self.N,
+            inference_batch_size=self.inference_batch_size,
         )
 
     @property
