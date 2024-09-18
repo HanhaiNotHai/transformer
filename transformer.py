@@ -105,7 +105,7 @@ class MultiHeadAttention(Module):
         self.Wo = Project(d_model, d_model)
 
     def forward(
-        self, y: Tensor, x: Tensor, mask: Tensor | None = None, i: int | None = None
+        self, y: Tensor, x: Tensor, x_mask: Tensor | None = None, i: int | None = None
     ) -> Tensor:
         # [b, l, d_model] -> [b, l, h_q * d_head]
         q = self.Wq(y)
@@ -141,7 +141,7 @@ class MultiHeadAttention(Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        x = scaled_dot_product_attention(q, k, v, mask, self.dropout if self.training else 0)
+        x = scaled_dot_product_attention(q, k, v, x_mask, self.dropout if self.training else 0)
         # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
         x = x.transpose(1, 2)
         # [b, l, h_q, d_head] -> [b, l, d_model]
@@ -475,11 +475,6 @@ class Transformer(Module):
             N,
         )
 
-        # Prevent leftward information flow in the decoder.
-        subsequent_mask = torch.ones([config.n_position, config.n_position]).bool().tril()
-        self.subsequent_mask: Tensor
-        self.register_buffer('subsequent_mask', subsequent_mask, persistent=False)
-
         self.to(config.device)
 
         if ckpt_path is not None:
@@ -503,14 +498,6 @@ class Transformer(Module):
         self.length_penalty = config.length_penalty
 
     def forward(self, x: Tensor, y: Tensor, x_mask: Tensor, y_mask: Tensor) -> Tensor:
-        # [b, l] -> [b, 1, 1, l]
-        x_mask.unsqueeze_(dim=1).unsqueeze_(dim=1)
-        # WHY: (subsequent_mask & y_mask) is faster than (y_mask & subsequent_mask).
-        # [l - 1, l - 1] & [b, 1, l - 1] -> [b, l - 1, l - 1]
-        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze(dim=1)
-        # [b, l - 1, l - 1] -> [b, 1, l - 1, l - 1]
-        y_mask.unsqueeze_(1)
-
         x = self.embedding(x)
         y = self.embedding(y)
         x = self.encoder(x, x_mask)

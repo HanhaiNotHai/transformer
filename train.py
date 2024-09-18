@@ -49,7 +49,7 @@ def main() -> None:
         wandb.log({'epoch': epoch}) if config.WANDB else None
 
         with tqdm(train_dataloader, desc='train', leave=False) as pbar:
-            for x, x_pad_mask, y, y_pad_mask in pbar:
+            for x, x_mask, y, y_mask in pbar:
                 pbar.set_postfix_str(
                     f'{torch.mps.current_allocated_memory() / 2**30:.1f} / '
                     f'{torch.mps.driver_allocated_memory() / 2**30:.1f} GB'
@@ -59,10 +59,9 @@ def main() -> None:
                 # [b, l - 1]
                 target = y[:, 1:]
                 y = y[:, :-1]
-                y_pad_mask = y_pad_mask[:, :-1]
 
                 optimizer.zero_grad()
-                logits = transformer(x, y, x_pad_mask, y_pad_mask)
+                logits = transformer(x, y, x_mask, y_mask)
                 # [b, l - 1, vocab_size] -> [b, vocab_size, l - 1]
                 logits.transpose_(1, 2)
                 loss: Tensor = cross_entropy_loss(logits, target)
