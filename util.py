@@ -72,7 +72,7 @@ class TrainDataloader(DataLoader):
 
 class TestDataloader(DataLoader):
 
-    def __init__(self, config: Config, tokenizer: Tokenizer, n: int | None = None) -> None:
+    def __init__(self, config: Config, tokenizer: Tokenizer) -> None:
         with open(config.test_src) as f:
             self.test_src_dataset = f.read().splitlines()
         self.test_x_dataset = list(map(tokenizer.encode, self.test_src_dataset))
@@ -83,13 +83,7 @@ class TestDataloader(DataLoader):
         assert len(self.test_src_dataset) == len(
             self.test_tgt_dataset
         ), 'src and tgt of test dataset should have the same length'
-        if n is None:
-            self.len = len(self.test_x_dataset)
-        else:
-            self.len = n
-            self.test_x_dataset = self.test_x_dataset[:n]
-            self.test_src_dataset = self.test_src_dataset[:n]
-            self.test_tgt_dataset = self.test_tgt_dataset[:n]
+        self.len = len(self.test_x_dataset)
 
         self.test_x_dataset = list(map(lambda x: x.to(config.device), self.test_x_dataset))
 
