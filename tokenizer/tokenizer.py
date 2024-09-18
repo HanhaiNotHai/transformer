@@ -48,6 +48,9 @@ class Tokenizer:
         pad_mask = torch.tensor([encoding.attention_mask for encoding in encodings]).bool()
         return tokens, pad_mask
 
+    def decode_batch(self, y_hat: list[list[int]]) -> list[str]:
+        return self.tokenizer.decode_batch(y_hat)
+
     def encode(self, sequence: str) -> Tensor:
         encoding = self.tokenizer.encode(sequence)
         tokens = torch.tensor(encoding.ids).unsqueeze_(dim=0)

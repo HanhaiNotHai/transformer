@@ -105,7 +105,7 @@ class MultiHeadAttention(Module):
         self.Wo = Project(d_model, d_model)
 
     def forward(
-        self, y: Tensor, x: Tensor, mask: Tensor | None = None, i: int | None = None
+        self, y: Tensor, x: Tensor, x_mask: Tensor | None = None, i: int | None = None
     ) -> Tensor:
         # [b, l, d_model] -> [b, l, h_q * d_head]
         q = self.Wq(y)
@@ -141,7 +141,7 @@ class MultiHeadAttention(Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        x = scaled_dot_product_attention(q, k, v, mask, self.dropout if self.training else 0)
+        x = scaled_dot_product_attention(q, k, v, x_mask, self.dropout if self.training else 0)
         # [b, h_q, l, d_head] -> [b, l, h_q, d_head]
         x = x.transpose(1, 2)
         # [b, l, h_q, d_head] -> [b, l, d_model]
@@ -161,8 +161,8 @@ class MultiHeadSelfAttention(Module):
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
         dropout: float = 0.1,
-        kv_cache: bool = False,
         inference_batch_size: int = 1,
+        kv_cache: bool = False,
     ) -> None:
         super().__init__()
 
@@ -347,6 +347,7 @@ class DecoderLayer(Module):
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
         dropout: float = 0.1,
+        inference_batch_size: int = 1,
         d_ff: int = 2048,
         num_experts: int = 8,
         topk: int = 2,
@@ -354,7 +355,7 @@ class DecoderLayer(Module):
         super().__init__()
 
         self.self_mha = MultiHeadSelfAttention(
-            d_model, h_q, h_kv, n_position, dropout, kv_cache=True
+            d_model, h_q, h_kv, n_position, dropout, inference_batch_size, kv_cache=True
         )
         self.self_mha_norm = nn.RMSNorm(d_model)
 
@@ -405,6 +406,7 @@ class Decoder(Module):
         h_kv: int = 1,  # num of k,v heads
         n_position: int = 100,  # length of rotary position embedding
         dropout: float = 0.1,
+        inference_batch_size: int = 1,
         d_ff: int = 2048,
         num_experts: int = 8,
         topk: int = 2,
@@ -413,7 +415,7 @@ class Decoder(Module):
         super().__init__()
 
         decoder_layer = DecoderLayer(
-            d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk
+            d_model, h_q, h_kv, n_position, dropout, inference_batch_size, d_ff, num_experts, topk
         )
         self.layers = nn.ModuleList(deepcopy(decoder_layer) for _ in range(N))
 
@@ -451,6 +453,7 @@ class Transformer(Module):
         num_experts: int = 8,
         topk: int = 2,
         N: int = 6,  # num of encoder,decoder layers
+        inference_batch_size: int = 1,
         ckpt_path: str | None = None,
     ) -> None:
         super().__init__()
@@ -459,12 +462,18 @@ class Transformer(Module):
         # and the pre-softmax linear transformation
         self.embedding = nn.Embedding(vocab_size, d_model, config.pad_id)
         self.encoder = Encoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
-        self.decoder = Decoder(d_model, h_q, h_kv, n_position, dropout, d_ff, num_experts, topk, N)
-
-        # Prevent leftward information flow in the decoder.
-        subsequent_mask = torch.ones([config.n_position, config.n_position]).bool().tril()
-        self.subsequent_mask: Tensor
-        self.register_buffer('subsequent_mask', subsequent_mask, persistent=False)
+        self.decoder = Decoder(
+            d_model,
+            h_q,
+            h_kv,
+            n_position,
+            dropout,
+            inference_batch_size,
+            d_ff,
+            num_experts,
+            topk,
+            N,
+        )
 
         self.to(config.device)
 
@@ -489,14 +498,6 @@ class Transformer(Module):
         self.length_penalty = config.length_penalty
 
     def forward(self, x: Tensor, y: Tensor, x_mask: Tensor, y_mask: Tensor) -> Tensor:
-        # [b, l] -> [b, 1, 1, l]
-        x_mask.unsqueeze_(dim=1).unsqueeze_(dim=1)
-        # WHY: (subsequent_mask & y_mask) is faster than (y_mask & subsequent_mask).
-        # [l - 1, l - 1] & [b, 1, l - 1] -> [b, l - 1, l - 1]
-        y_mask = self.subsequent_mask[: y.shape[1], : y.shape[1]] & y_mask.unsqueeze(dim=1)
-        # [b, l - 1, l - 1] -> [b, 1, l - 1, l - 1]
-        y_mask.unsqueeze_(1)
-
         x = self.embedding(x)
         y = self.embedding(y)
         x = self.encoder(x, x_mask)
@@ -513,7 +514,7 @@ class Transformer(Module):
         x = self.encoder(x)
 
         seq_len = min(x.shape[1] + 50, self.max_len)
-        y = torch.empty([1, seq_len], dtype=torch.long, device=self.device)
+        y = torch.empty([1, seq_len], dtype=torch.long).to(self.device)
         y[0, 0] = self.bos_id
 
         for i in range(seq_len - 1):
@@ -529,13 +530,41 @@ class Transformer(Module):
         return y[0, 1:]
 
     @torch.inference_mode()
+    def inference_batch(self, x: Tensor, x_mask: Tensor | None = None) -> list[list[int]]:
+        x = self.embedding(x)
+        x = self.encoder(x, x_mask)
+
+        bs = x.shape[0]
+        seq_len = min(x.shape[1] + 50, self.max_len)
+        y = torch.empty([bs, seq_len], dtype=torch.long).to(self.device)
+        y[:, 0] = self.bos_id
+        y_mask = torch.ones(bs, 1, 1, 1).bool().to(self.device)
+        EOSidx = torch.full([bs], seq_len).to(self.device)
+
+        for i in range(seq_len - 1):
+            y_emb = self.embedding(y[:, i : i + 1])
+            dec_out = self.decoder(y_emb, x, y_mask, x_mask, i, kv_cache=True)
+            logits = dec_out @ self.embedding.weight.T
+
+            y[:, i + 1] = logits.argmax(dim=-1).squeeze()
+            idx = torch.where((y[:, i + 1] == self.eos_id) & y_mask.squeeze())[0]
+            y_mask[idx] = False
+            EOSidx[idx] = i + 1
+
+            if torch.all(y_mask == False):
+                break
+
+        # Remove BOS and EOS ids.
+        return [y[i][1 : EOSidx[i]].tolist() for i in range(bs)]
+
+    @torch.inference_mode()
     def beam_search(self, x: Tensor) -> Tensor:
         x = self.embedding(x)
         x = self.encoder(x)
 
         seq_len = min(x.shape[1] + 50, self.max_len)
         # (score, EOSidx, -log_prob, y)  EOSidx==0 means EOS is not found.
-        beams = [(0, 0, 0, torch.empty([1, seq_len], dtype=torch.long, device=self.device))]
+        beams = [(0, 0, 0, torch.empty([1, seq_len], dtype=torch.long).to(self.device))]
         for *_, y in beams:
             y[0, 0] = self.bos_id
 
